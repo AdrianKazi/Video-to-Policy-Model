@@ -1,0 +1,15 @@
+MACHINE_FORWARD_CONFIG = {
+    "z_dim": 64,
+    "real_a_dim": 2,
+    "hidden_dim": 256,
+    "num_layers": 1,
+    "hist_len": 8,
+    "n_episodes": 100,
+    "max_steps": 300,
+    "epochs": 30,
+    "batch_size": 128,
+    "lr": 3e-4,
+    "test_ratio": 0.2,
+    "early_stop_patience": 5,
+    "early_stop_min_delta": 1e-5,
+}
