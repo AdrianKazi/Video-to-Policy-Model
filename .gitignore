@@ -32,3 +32,7 @@ __pycache__/
 # local env
 .venv/
 .DS_Store
+
+# notes
+Student/research_references.txt
+Student/todo
