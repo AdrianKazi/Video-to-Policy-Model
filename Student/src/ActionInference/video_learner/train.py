@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from ..shared.loaders import load_ae_model, load_lstm_model
 from ..shared.experiment import finish_experiment, start_experiment
-from ..shared.tensorboard import log_image_batch, log_step_features, log_tensor, make_writer
+from ..shared.tensorboard import log_tensor, make_writer
 from .models import overlay_frames, IDMModel, FDMModel
 from ..shared.paths import (
     SEQ_TRAIN_PT,
@@ -351,34 +351,37 @@ def train_video_learner(
 
 
 def _log_video_learner_debug(writer, batch, step):
-    log_step_features(writer, "video_learner_01_getlatent", ["AE reconstruction MSE", "decoded z_i_true frame preview"], step)
-    log_step_features(writer, "video_learner_02_history", ["history length k", "temporal latent drift", "adjacent latent distance"], step)
-    log_step_features(writer, "video_learner_03_lstmhidden", ["h_t activation distribution", "LSTM next-latent baseline MSE"], step)
-    log_step_features(writer, "video_learner_04_overlay", ["overlay preview", "overlay intensity range", "motion visibility"], step)
-    log_step_features(writer, "video_learner_05_overlaylatent", ["overlay reconstruction MSE", "m_t vs z_t_true distance"], step)
-    log_step_features(writer, "video_learner_06_context", ["component norms", "concat dimension check"], step)
-    log_step_features(writer, "video_learner_07_idm_latentaction", ["latent action mean / std / min / max", "saturation", "dead dimensions"], step)
-    log_step_features(writer, "video_learner_08_fdm_input", ["c_t norm vs latent action norm", "concat dimension check"], step)
-    log_step_features(writer, "video_learner_09_delta_research", ["delta-target MSE vs direct-next-latent MSE"], step)
-    log_step_features(writer, "video_learner_10_fdm_delta", ["delta norm", "delta cosine", "delta MSE"], step)
-    log_step_features(writer, "video_learner_11_build_nextlatent", ["decoded predicted next preview", "predicted next vs true next distance"], step)
-    log_step_features(writer, "video_learner_12_loss", ["video MSE", "video/LSTM MSE ratio", "loss curve"], step)
-    log_image_batch(writer, "video_learner_01_getlatent/sample", batch["x_input"], step)
-    log_image_batch(writer, "video_learner_04_overlay/sample", batch["x_overlay"], step)
-    log_tensor(writer, "video_learner_01_getlatent", batch["z_input"], step)
-    log_tensor(writer, "video_learner_02_history", batch["z_input"], step)
-    log_tensor(writer, "video_learner_03_lstmhidden", batch["h_t"], step)
-    log_tensor(writer, "video_learner_05_overlaylatent", batch["m_t"], step)
-    log_tensor(writer, "video_learner_06_context", batch["c_t"], step)
-    log_tensor(writer, "video_learner_07_idm_latentaction", batch["latent_a"], step)
-    log_tensor(writer, "video_learner_08_fdm_input", torch.cat([batch["c_t"], batch["latent_a"]], dim=-1), step)
-    log_tensor(writer, "video_learner_10_fdm_delta", batch["delta_z_pred"], step)
-    log_tensor(writer, "video_learner_10_true_delta", batch["delta_z_true"], step)
-    log_tensor(writer, "video_learner_11_build_nextlatent", batch["z_pred_next"], step)
-    writer.add_scalar("video_learner_10_fdm_delta/delta_cos", batch["cos_delta"].item(), step)
-    writer.add_scalar("video_learner_10_fdm_delta/delta_mse", batch["loss_delta"].item(), step)
-    writer.add_scalar("video_learner_12_loss/video_mse", batch["loss_z"].item(), step)
-    writer.add_scalar("video_learner_12_loss/lstm_baseline_mse", batch["loss_lstm"].item(), step)
+    writer.add_text(
+        "VIDEO_LEARNER_READ_ME_FIRST",
+        "\n".join(
+            [
+                "A_LOSS: video next-latent MSE vs LSTM baseline.",
+                "B_DELTA_QUALITY: cosine/MSE between predicted and true latent delta.",
+                "C_LATENT_ACTION: IDM latent action distribution; this is not a real env action.",
+            ]
+        ),
+        0,
+    )
+    log_tensor(writer, "C_LATENT_ACTION_FROM_IDM_NOT_REAL_ENV_ACTION", batch["latent_a"], step)
+    log_tensor(writer, "B_PREDICTED_DELTA_VECTOR_FROM_FDM", batch["delta_z_pred"], step)
+    log_tensor(writer, "B_TRUE_DELTA_VECTOR_FROM_VIDEO", batch["delta_z_true"], step)
+    writer.add_scalar("video_learner_01_getlatent/current_latent_norm", batch["z_t"].norm(dim=-1).mean().item(), step)
+    writer.add_scalar("video_learner_02_history/history_latent_drift", (batch["z_input"][:, -1] - batch["z_input"][:, 0]).norm(dim=-1).mean().item(), step)
+    writer.add_scalar("video_learner_03_lstmhidden/lstm_hidden_norm", batch["h_t"].norm(dim=-1).mean().item(), step)
+    writer.add_scalar("video_learner_03_lstmhidden/lstm_baseline_mse", batch["loss_lstm"].item(), step)
+    writer.add_scalar("video_learner_04_overlay/overlay_mean_intensity", batch["x_overlay"].mean().item(), step)
+    writer.add_scalar("video_learner_05_overlaylatent/overlay_latent_norm", batch["m_t"].norm(dim=-1).mean().item(), step)
+    writer.add_scalar("video_learner_06_context/context_norm", batch["c_t"].norm(dim=-1).mean().item(), step)
+    writer.add_scalar("video_learner_07_idm_latentaction/latent_action_std", batch["latent_a"].std(dim=0, unbiased=False).mean().item(), step)
+    writer.add_scalar("video_learner_08_fdm_input/fdm_input_norm", torch.cat([batch["c_t"], batch["latent_a"]], dim=-1).norm(dim=-1).mean().item(), step)
+    writer.add_scalar("video_learner_09_delta_research/delta_target_mse", batch["loss_delta"].item(), step)
+    writer.add_scalar("video_learner_10_fdm_delta/predicted_delta_norm", batch["delta_z_pred"].norm(dim=-1).mean().item(), step)
+    writer.add_scalar("video_learner_11_build_nextlatent/predicted_next_vs_true_mse", batch["loss_z"].item(), step)
+    writer.add_scalar("video_learner_12_loss/video_next_latent_mse", batch["loss_z"].item(), step)
+    writer.add_scalar("A_LOSS/video_next_latent_mse", batch["loss_z"].item(), step)
+    writer.add_scalar("A_LOSS/lstm_baseline_mse", batch["loss_lstm"].item(), step)
+    writer.add_scalar("B_DELTA_QUALITY/cosine_pred_vs_true", batch["cos_delta"].item(), step)
+    writer.add_scalar("B_DELTA_QUALITY/delta_mse", batch["loss_delta"].item(), step)
 
 
 if __name__ == "__main__":

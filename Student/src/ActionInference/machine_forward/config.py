@@ -6,6 +6,8 @@ MACHINE_FORWARD_CONFIG = {
     "hist_len": 8,
     "n_episodes": 100,
     "max_steps": 300,
+    "min_delta_norm": 0.15,
+    "max_stride": 8,
     "epochs": 30,
     "batch_size": 128,
     "lr": 3e-4,

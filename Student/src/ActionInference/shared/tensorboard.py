@@ -1,4 +1,5 @@
 from pathlib import Path
+import os
 
 import torch
 from torch.utils.tensorboard import SummaryWriter
@@ -19,10 +20,10 @@ GLOBAL_FEATURES_TEXT = "\n".join(
 
 
 def make_writer(run_dir, name):
-    log_dir = Path(run_dir) / "tensorboard" / name
+    run_id = os.environ.get("ACTION_EXPERIMENT_ID", "default_run")
+    log_dir = Path(run_dir) / "tensorboard" / name / run_id
     log_dir.mkdir(parents=True, exist_ok=True)
     writer = SummaryWriter(log_dir=str(log_dir))
-    writer.add_text("global_00_globalfeatures/features", GLOBAL_FEATURES_TEXT, 0)
     return writer
 
 
@@ -63,6 +64,7 @@ def log_tensor(writer, tag, value, step, histogram=True):
 def log_step_features(writer, tag, features, step):
     text = "\n".join([f"* {feature}" for feature in features])
     writer.add_text(f"{tag}/diagnostic_features", text, step)
+    writer.add_scalar(f"{tag}/step_present", 1.0, step)
 
 
 def log_image_batch(writer, tag, value, step, max_images=4):

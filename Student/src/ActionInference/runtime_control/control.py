@@ -83,6 +83,7 @@ def desired_delta_from_video_context(
     history_len=31,
     overlay_decay=0.9,
     delta_z_scale=1.0,
+    return_debug=False,
 ):
     hist = _pad_tail(x_hist, history_len)
     x_seq = torch.stack(hist, dim=0)[None]
@@ -99,7 +100,20 @@ def desired_delta_from_video_context(
     c_t = torch.cat([z_t, h_t, m_t], dim=-1)
 
     latent_a = idm_model(c_t)
+    x_fdm = torch.cat([c_t, latent_a], dim=-1)
     delta_z_desired = fdm_model(c_t, latent_a) * delta_z_scale
+
+    if return_debug:
+        return delta_z_desired, latent_a, {
+            "x_seq": x_seq.detach(),
+            "x_overlay": x_overlay.detach(),
+            "z_hist": z_hist.detach(),
+            "z_t": z_t.detach(),
+            "h_t": h_t.detach(),
+            "m_t": m_t.detach(),
+            "c_t": c_t.detach(),
+            "x_fdm": x_fdm.detach(),
+        }
 
     return delta_z_desired, latent_a
 
@@ -113,6 +127,7 @@ def choose_action_by_machine_forward(
     action_high=0.7,
     action_l2_penalty=0.05,
     real_a_dim=2,
+    return_debug=False,
 ):
     machine_forward_model.eval()
 
@@ -152,6 +167,18 @@ def choose_action_by_machine_forward(
     best_actions = actions[torch.arange(bsz, device=device), best_idx]
     best_losses = losses[torch.arange(bsz, device=device), best_idx]
 
+    if return_debug:
+        best_dz_pred = dz_pred[torch.arange(bsz, device=device), best_idx]
+        best_latent_loss = latent_loss[torch.arange(bsz, device=device), best_idx]
+        best_action_penalty = action_penalty[torch.arange(bsz, device=device), best_idx]
+        return best_actions, best_losses, {
+            "candidate_actions": actions.detach(),
+            "best_dz_pred": best_dz_pred.detach(),
+            "best_latent_loss": best_latent_loss.detach(),
+            "best_action_penalty": best_action_penalty.detach(),
+            "candidate_delta_norms": torch.linalg.vector_norm(dz_pred.detach(), dim=-1),
+        }
+
     return best_actions, best_losses
 
 
@@ -187,6 +214,23 @@ def rollout_lander_machine_forward(
     desired_delta_norms = []
     search_losses = []
     rewards = []
+    debug = {
+        "getlatent": [],
+        "video_history": [],
+        "machine_history": [],
+        "lstmhidden": [],
+        "overlay": [],
+        "overlaylatent": [],
+        "context": [],
+        "fdm_input": [],
+        "desired_delta": [],
+        "machine_hidden": [],
+        "candidate_actions": [],
+        "machine_input": [],
+        "machine_candidate_delta": [],
+        "chooseaction_latent_loss": [],
+        "chooseaction_action_penalty": [],
+    }
     total_reward = 0.0
 
     for _ in range(max_steps):
@@ -200,7 +244,7 @@ def rollout_lander_machine_forward(
             _, z = ae_model(x)
         z_buffer.append(z.squeeze(0).detach().cpu())
 
-        delta_z_desired, latent_a = desired_delta_from_video_context(
+        delta_z_desired, latent_a, video_debug = desired_delta_from_video_context(
             ae_model=ae_model,
             lstm_model=lstm_model,
             idm_model=idm_model,
@@ -209,12 +253,13 @@ def rollout_lander_machine_forward(
             history_len=video_history_len,
             overlay_decay=overlay_decay,
             delta_z_scale=delta_z_scale,
+            return_debug=True,
         )
 
         machine_hist = _pad_tail(z_buffer, machine_hist_len)
         z_hist_machine = torch.stack(machine_hist, dim=0)[None].to(device)
 
-        action, search_loss = choose_action_by_machine_forward(
+        action, search_loss, search_debug = choose_action_by_machine_forward(
             machine_forward_model=machine_forward_model,
             z_hist=z_hist_machine,
             delta_z_desired=delta_z_desired,
@@ -223,7 +268,13 @@ def rollout_lander_machine_forward(
             action_high=action_high,
             action_l2_penalty=action_l2_penalty,
             real_a_dim=real_a_dim,
+            return_debug=True,
         )
+
+        with torch.no_grad():
+            _, (h_n_machine, _) = machine_forward_model.history_encoder(z_hist_machine)
+            h_t_machine = h_n_machine[-1]
+            x_machine = torch.cat([h_t_machine, action], dim=-1)
 
         action_np = action[0].detach().cpu().numpy()
         action_np = np.clip(action_np, -1.0, 1.0).astype(np.float32)
@@ -236,6 +287,22 @@ def rollout_lander_machine_forward(
         search_losses.append(float(search_loss.item()))
         rewards.append(float(reward))
         total_reward += float(reward)
+
+        debug["getlatent"].append(z.detach().squeeze(0).cpu())
+        debug["video_history"].append(video_debug["z_hist"].detach().squeeze(0).cpu())
+        debug["machine_history"].append(z_hist_machine.detach().squeeze(0).cpu())
+        debug["lstmhidden"].append(video_debug["h_t"].detach().squeeze(0).cpu())
+        debug["overlay"].append(video_debug["x_overlay"].detach().squeeze(0).cpu())
+        debug["overlaylatent"].append(video_debug["m_t"].detach().squeeze(0).cpu())
+        debug["context"].append(video_debug["c_t"].detach().squeeze(0).cpu())
+        debug["fdm_input"].append(video_debug["x_fdm"].detach().squeeze(0).cpu())
+        debug["desired_delta"].append(delta_z_desired.detach().squeeze(0).cpu())
+        debug["machine_hidden"].append(h_t_machine.detach().squeeze(0).cpu())
+        debug["candidate_actions"].append(search_debug["candidate_actions"].detach().squeeze(0).cpu())
+        debug["machine_input"].append(x_machine.detach().squeeze(0).cpu())
+        debug["machine_candidate_delta"].append(search_debug["best_dz_pred"].detach().squeeze(0).cpu())
+        debug["chooseaction_latent_loss"].append(search_debug["best_latent_loss"].detach().cpu())
+        debug["chooseaction_action_penalty"].append(search_debug["best_action_penalty"].detach().cpu())
 
         if len(x_hist) > video_history_len:
             x_hist = x_hist[-video_history_len:]
@@ -255,4 +322,9 @@ def rollout_lander_machine_forward(
         "desired_delta_norms": np.array(desired_delta_norms),
         "search_losses": np.array(search_losses),
         "rewards": np.array(rewards),
+        "debug": {
+            key: torch.stack(value, dim=0)
+            for key, value in debug.items()
+            if value
+        },
     }

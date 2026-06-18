@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import torch
 
 from ActionInference.shared.experiment import finish_experiment, start_experiment
-from ActionInference.shared.tensorboard import log_step_features, log_tensor, make_writer
+from ActionInference.shared.tensorboard import log_tensor, make_writer
 from ActionInference.runtime_control.config import RUNTIME_CONTROL_CONFIG
 from ActionInference.runtime_control.control import (
     load_runtime_models,
@@ -144,35 +144,78 @@ def _log_runtime_tensorboard(writer, stats):
     desired_delta_norms = torch.from_numpy(stats["desired_delta_norms"]).float()
     search_losses = torch.from_numpy(stats["search_losses"]).float()
     rewards = torch.from_numpy(stats["rewards"]).float()
+    debug = stats.get("debug", {})
 
-    log_step_features(writer, "runtime_control_01_getlatent", ["AE reconstruction MSE", "decoded latent preview"], 0)
-    log_step_features(writer, "runtime_control_02_video_history", ["video history length", "movement-window latent drift"], 0)
-    log_step_features(writer, "runtime_control_03_machine_history", ["machine history length", "overlap with video history", "action-window latent drift"], 0)
-    log_step_features(writer, "runtime_control_04_lstmhidden", ["h_t activation distribution", "hidden norm"], 0)
-    log_step_features(writer, "runtime_control_05_overlay", ["overlay preview", "motion visibility", "overlay intensity range"], 0)
-    log_step_features(writer, "runtime_control_06_overlaylatent", ["overlay reconstruction MSE", "m_t norm", "m_t vs z_t distance"], 0)
-    log_step_features(writer, "runtime_control_07_context", ["component norms", "concat dimension check"], 0)
-    log_step_features(writer, "runtime_control_08_idm_latentaction", ["latent action mean / std / min / max", "saturation", "dead dimensions"], 0)
-    log_step_features(writer, "runtime_control_09_fdm_input", ["c_t norm vs latent action norm", "concat dimension check"], 0)
-    log_step_features(writer, "runtime_control_10_desired_delta", ["desired delta norm", "desired delta distribution", "desired delta vs reachable delta range"], 0)
-    log_step_features(writer, "runtime_control_11_machine_hidden", ["machine hidden activation distribution", "machine hidden norm"], 0)
-    log_step_features(writer, "runtime_control_12_candidate_actions", ["candidate action coverage", "candidate action mean / std", "boundary coverage"], 0)
-    log_step_features(writer, "runtime_control_13_machine_input", ["machine hidden norm vs candidate action norm", "batch dimension check"], 0)
-    log_step_features(writer, "runtime_control_14_machine_candidate_delta", ["candidate delta spread", "action sensitivity", "reachable delta range"], 0)
-    log_step_features(writer, "runtime_control_15_chooseaction", ["selected action distribution", "search loss", "best-vs-median candidate loss", "action L2 penalty contribution"], 0)
-    log_step_features(writer, "runtime_control_16_applyaction", ["rollout reward", "episode length", "action trace", "rollout mp4"], 0)
-    log_tensor(writer, "runtime_control_08_idm_latentaction", latent_actions, 0)
-    log_tensor(writer, "runtime_control_10_desired_delta", desired_delta_norms, 0)
-    log_tensor(writer, "runtime_control_14_machine_candidate_delta", search_losses, 0)
-    log_tensor(writer, "runtime_control_15_chooseaction", actions, 0)
-    log_tensor(writer, "runtime_control_16_applyaction", rewards, 0)
+    chosen_machine_delta = debug.get("machine_candidate_delta")
+    if chosen_machine_delta is not None:
+        chosen_machine_delta_norms = torch.linalg.vector_norm(chosen_machine_delta.float(), dim=-1)
+    else:
+        chosen_machine_delta_norms = torch.empty(0)
+
+    writer.add_text(
+        "RUNTIME_CONTROL_READ_ME_FIRST",
+        "\n".join(
+            [
+                "A_DESIRED_DELTA_NORM: what Video Learner asks the controller to do.",
+                "B_CHOSEN_MACHINE_DELTA_NORM: what the selected real action can do according to Machine Forward.",
+                "C_CHOSEN_REAL_ACTION_A0_A1: actual LunarLander action sent to env.",
+                "D_SEARCH_LOSS: planner matching loss after action penalty.",
+                "E_REWARD_PER_STEP: environment reward after applying chosen action.",
+            ]
+        ),
+        0,
+    )
+
+    log_tensor(writer, "A_DESIRED_DELTA_VECTOR_FROM_VIDEO_LEARNER", debug.get("desired_delta"), 0)
+    log_tensor(writer, "B_CHOSEN_MACHINE_DELTA_VECTOR_FROM_REAL_ACTION", chosen_machine_delta, 0)
+    log_tensor(writer, "C_CHOSEN_REAL_ACTION_A0_A1_SENT_TO_ENV", actions, 0)
+    log_tensor(writer, "C_IDM_LATENT_ACTION_NOT_REAL_ACTION", latent_actions, 0)
+    log_tensor(writer, "D_SEARCH_LOSS_MATCH_DESIRED_VS_MACHINE_DELTA", search_losses, 0)
+    log_tensor(writer, "E_REWARD_PER_STEP_AFTER_ACTION", rewards, 0)
+
+    if debug:
+        getlatent = debug.get("getlatent")
+        video_history = debug.get("video_history")
+        machine_history = debug.get("machine_history")
+        lstmhidden = debug.get("lstmhidden")
+        overlay = debug.get("overlay")
+        overlaylatent = debug.get("overlaylatent")
+        context = debug.get("context")
+        fdm_input = debug.get("fdm_input")
+        desired_delta = debug.get("desired_delta")
+        machine_hidden = debug.get("machine_hidden")
+        candidate_actions = debug.get("candidate_actions")
+        machine_input = debug.get("machine_input")
+        choose_latent_loss = debug.get("chooseaction_latent_loss")
+        choose_action_penalty = debug.get("chooseaction_action_penalty")
 
     for i in range(actions.shape[0]):
-        writer.add_scalar("runtime_control_15_chooseaction/a0", actions[i, 0].item(), i)
-        writer.add_scalar("runtime_control_15_chooseaction/a1", actions[i, 1].item(), i)
-        writer.add_scalar("runtime_control_10_desired_delta/norm", desired_delta_norms[i].item(), i)
-        writer.add_scalar("runtime_control_15_chooseaction/search_loss", search_losses[i].item(), i)
-        writer.add_scalar("runtime_control_16_applyaction/reward", rewards[i].item(), i)
+        if debug:
+            writer.add_scalar("runtime_control_01_getlatent/current_latent_norm", getlatent[i].norm().item(), i)
+            writer.add_scalar("runtime_control_02_video_history/video_history_drift", (video_history[i, -1] - video_history[i, 0]).norm().item(), i)
+            writer.add_scalar("runtime_control_03_machine_history/machine_history_drift", (machine_history[i, -1] - machine_history[i, 0]).norm().item(), i)
+            writer.add_scalar("runtime_control_04_lstmhidden/lstm_hidden_norm", lstmhidden[i].norm().item(), i)
+            writer.add_scalar("runtime_control_05_overlay/overlay_mean_intensity", overlay[i].mean().item(), i)
+            writer.add_scalar("runtime_control_06_overlaylatent/overlay_latent_norm", overlaylatent[i].norm().item(), i)
+            writer.add_scalar("runtime_control_07_context/context_norm", context[i].norm().item(), i)
+            writer.add_scalar("runtime_control_08_idm_latentaction/latent_action_norm_not_real_action", latent_actions[i].norm().item(), i)
+            writer.add_scalar("runtime_control_09_fdm_input/fdm_input_norm", fdm_input[i].norm().item(), i)
+            writer.add_scalar("runtime_control_10_desired_delta/desired_delta_norm_from_video_learner", desired_delta[i].norm().item(), i)
+            writer.add_scalar("runtime_control_11_machine_hidden/machine_hidden_norm", machine_hidden[i].norm().item(), i)
+            writer.add_scalar("runtime_control_12_candidate_actions/candidate_action_std", candidate_actions[i].std(dim=0, unbiased=False).mean().item(), i)
+            writer.add_scalar("runtime_control_13_machine_input/chosen_machine_input_norm", machine_input[i].norm().item(), i)
+            if chosen_machine_delta_norms.numel():
+                writer.add_scalar("runtime_control_14_machine_candidate_delta/chosen_machine_delta_norm", chosen_machine_delta_norms[i].item(), i)
+            writer.add_scalar("runtime_control_15_chooseaction/latent_match_loss", choose_latent_loss[i].item(), i)
+            writer.add_scalar("runtime_control_15_chooseaction/action_penalty", choose_action_penalty[i].item(), i)
+            writer.add_scalar("runtime_control_16_applyaction/reward_after_chosen_action", rewards[i].item(), i)
+        writer.add_scalar("A_DESIRED_DELTA_NORM_FROM_VIDEO_LEARNER", desired_delta_norms[i].item(), i)
+        if chosen_machine_delta_norms.numel():
+            writer.add_scalar("B_CHOSEN_MACHINE_DELTA_NORM_FROM_REAL_ACTION", chosen_machine_delta_norms[i].item(), i)
+        writer.add_scalar("C_CHOSEN_REAL_ACTION/a0_main_engine", actions[i, 0].item(), i)
+        writer.add_scalar("C_CHOSEN_REAL_ACTION/a1_side_engine", actions[i, 1].item(), i)
+        writer.add_scalar("D_SEARCH_LOSS_MATCH_DESIRED_VS_MACHINE_DELTA", search_losses[i].item(), i)
+        writer.add_scalar("E_REWARD_PER_STEP_AFTER_ACTION", rewards[i].item(), i)
 
 
 if __name__ == "__main__":

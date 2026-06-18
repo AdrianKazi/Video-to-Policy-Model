@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader, TensorDataset, random_split
 from ActionInference.machine_forward.config import MACHINE_FORWARD_CONFIG
 from ActionInference.machine_forward.models import MachineForwardModel
 from ActionInference.shared.experiment import finish_experiment, start_experiment
-from ActionInference.shared.tensorboard import log_step_features, log_tensor, make_writer
+from ActionInference.shared.tensorboard import log_tensor, make_writer
 from ActionInference.shared.paths import (
     MACHINE_FORWARD_RUN_DIR,
     MACHINE_LOSSES_PT,
@@ -37,6 +37,8 @@ def train_machine_forward(
     test_ratio=0.2,
     early_stop_patience=5,
     early_stop_min_delta=1e-5,
+    min_delta_norm=None,
+    max_stride=None,
 ):
     MACHINE_FORWARD_RUN_DIR.mkdir(parents=True, exist_ok=True)
     exp = start_experiment("machine_forward_train", MACHINE_FORWARD_CONFIG)
@@ -222,30 +224,44 @@ def _log_machine_forward_debug(writer, model, batch, step):
         h_t_machine = h_n[-1]
         x_machine = torch.cat([h_t_machine, batch["a_real"]], dim=-1)
         z_t = batch["z_hist"][:, -1]
+        z_next_true = z_t + batch["dz_true"]
         z_pred_next = z_t + batch["dz_pred"]
 
-    log_step_features(writer, "machine_forward_01_sampleaction", ["action mean / std / min / max", "action coverage"], step)
-    log_step_features(writer, "machine_forward_02_envstep", ["frame transition preview", "episode length", "terminated / truncated rate"], step)
-    log_step_features(writer, "machine_forward_03_currentlatent", ["AE reconstruction MSE", "decoded z_t_true preview"], step)
-    log_step_features(writer, "machine_forward_04_machinehistory", ["machine history length", "latent drift"], step)
-    log_step_features(writer, "machine_forward_05_nextlatent", ["decoded z_next_true preview", "z_next_true vs z_t_true distance"], step)
-    log_step_features(writer, "machine_forward_06_encodehistory", ["h_t_machine activation distribution", "history encoder hidden norm"], step)
-    log_step_features(writer, "machine_forward_07_machineinput", ["hidden norm vs action norm", "concat dimension check"], step)
-    log_step_features(writer, "machine_forward_08_true_delta", ["true delta norm", "true delta distribution", "zero baseline MSE"], step)
-    log_step_features(writer, "machine_forward_09_pred_delta", ["pred delta norm", "pred vs true delta cosine", "action sensitivity"], step)
-    log_step_features(writer, "machine_forward_10_build_nextlatent", ["decoded predicted next frame", "predicted next vs true next distance"], step)
-    log_step_features(writer, "machine_forward_11_loss", ["machine MSE", "zero baseline MSE", "zero/machine ratio"], step)
-    log_step_features(writer, "machine_forward_12_delta_research", ["delta-target MSE vs direct-next-latent MSE"], step)
-    log_tensor(writer, "machine_forward_01_sampleaction", batch["a_real"], step)
-    log_tensor(writer, "machine_forward_03_currentlatent", z_t, step)
-    log_tensor(writer, "machine_forward_04_machinehistory", batch["z_hist"], step)
-    log_tensor(writer, "machine_forward_06_encodehistory", h_t_machine, step)
-    log_tensor(writer, "machine_forward_07_machineinput", x_machine, step)
-    log_tensor(writer, "machine_forward_08_true_delta", batch["dz_true"], step)
-    log_tensor(writer, "machine_forward_09_pred_delta", batch["dz_pred"], step)
-    log_tensor(writer, "machine_forward_10_build_nextlatent", z_pred_next, step)
-    writer.add_scalar("machine_forward_09_pred_delta/action_sensitivity_proxy", batch["dz_pred"].std(dim=0, unbiased=False).mean().item(), step)
+    writer.add_text(
+        "MACHINE_FORWARD_READ_ME_FIRST",
+        "\n".join(
+            [
+                "A_LOSS: MachineForward MSE and zero-delta baseline.",
+                "B_TRUE_DELTA: latent movement produced by real env action over adaptive stride.",
+                "C_PREDICTED_DELTA: MachineForward prediction for that real action.",
+                "D_REAL_ACTION: sampled LunarLander action used for training.",
+            ]
+        ),
+        0,
+    )
+    log_tensor(writer, "D_REAL_ACTION_USED_FOR_MACHINE_FORWARD_TRAINING", batch["a_real"], step)
+    log_tensor(writer, "B_TRUE_DELTA_FROM_ENV_ADAPTIVE_STRIDE", batch["dz_true"], step)
+    log_tensor(writer, "C_PREDICTED_DELTA_FROM_MACHINE_FORWARD", batch["dz_pred"], step)
+    writer.add_scalar("machine_forward_01_sampleaction/real_action_std", batch["a_real"].std(dim=0, unbiased=False).mean().item(), step)
+    writer.add_scalar("machine_forward_02_envstep/latent_transition_norm_after_action", batch["dz_true"].norm(dim=-1).mean().item(), step)
+    writer.add_scalar("machine_forward_03_currentlatent/current_latent_norm", z_t.norm(dim=-1).mean().item(), step)
+    writer.add_scalar("machine_forward_04_machinehistory/history_latent_drift", (batch["z_hist"][:, -1] - batch["z_hist"][:, 0]).norm(dim=-1).mean().item(), step)
+    writer.add_scalar("machine_forward_05_nextlatent/current_to_next_latent_distance", batch["dz_true"].norm(dim=-1).mean().item(), step)
+    writer.add_scalar("machine_forward_06_encodehistory/machine_hidden_norm", h_t_machine.norm(dim=-1).mean().item(), step)
+    writer.add_scalar("machine_forward_07_machineinput/machine_input_norm", x_machine.norm(dim=-1).mean().item(), step)
+    writer.add_scalar("machine_forward_08_true_delta/true_delta_norm", batch["dz_true"].norm(dim=-1).mean().item(), step)
+    writer.add_scalar("machine_forward_09_pred_delta/predicted_delta_norm", batch["dz_pred"].norm(dim=-1).mean().item(), step)
+    writer.add_scalar("machine_forward_10_build_nextlatent/predicted_next_vs_true_mse", F.mse_loss(z_pred_next, z_next_true).item(), step)
     writer.add_scalar("machine_forward_11_loss/train_batch_mse", batch["loss"].item(), step)
+    writer.add_scalar("machine_forward_12_delta_research/delta_prediction_mse", F.mse_loss(batch["dz_pred"], batch["dz_true"]).item(), step)
+    writer.add_scalar("A_LOSS/train_batch_mse", batch["loss"].item(), step)
+    writer.add_scalar("B_TRUE_DELTA/norm_mean", batch["dz_true"].norm(dim=-1).mean().item(), step)
+    writer.add_scalar("C_PREDICTED_DELTA/norm_mean", batch["dz_pred"].norm(dim=-1).mean().item(), step)
+    writer.add_scalar(
+        "C_PREDICTED_DELTA/cosine_pred_vs_true",
+        F.cosine_similarity(batch["dz_pred"], batch["dz_true"], dim=-1).mean().item(),
+        step,
+    )
 
 
 if __name__ == "__main__":
