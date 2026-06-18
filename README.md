@@ -1,3 +1,32 @@
+## Project Summary
+
+This model tries to infer control from video. It watches LunarLander frames, learns the latent movement implied by the video, learns how real environment actions move the same latent space, and then searches for a real action that best matches the video-implied movement.
+
+This project explores whether real control actions can be recovered from video alone by learning a latent transition space.
+
+The motivation is to test a mostly neural alternative to classical reinforcement learning. RL can be expensive, environment-specific, and harder to reuse outside the simulator or task it was trained on. A neural video-to-action pipeline could, in principle, make action inference more reusable by learning from visual transitions and an action space instead of repeatedly optimizing a policy through environment interaction.
+
+At this stage, this project does not claim to solve that problem. I did not find a working fully neural replacement for the control loop here. The value of the project is the experimental evidence, diagnostics, and the failure analysis.
+
+The pipeline is:
+
+1. encode frames into latents with an autoencoder,
+2. learn video-implied latent actions and desired latent deltas,
+3. learn how real LunarLander actions move the same latent space,
+4. search for the real action whose predicted latent delta best matches the video-implied desired delta.
+
+The useful result is not a finished controller. The useful result is the research finding: the individual parts can be made to produce meaningful diagnostics, but the full architecture becomes too large to debug cleanly when started end-to-end.
+
+The main lesson is that this kind of project should start from small controlled experiments:
+
+- one short trajectory,
+- one frame pair or one small frame window,
+- one latent delta target,
+- one action-search problem,
+- then scale only after each piece is empirically understood.
+
+Starting from a full multi-model architecture made the failure mode harder to isolate. The current bottleneck is the Runtime Control interface between video-implied latent deltas and real-action Machine Forward deltas, especially after introducing adaptive stride.
+
 ## Setup
 
 Python 3.10.11 (pinned in `.venv`).
@@ -95,7 +124,7 @@ Learns:
 Builds probe data from LunarLander random real actions:
 - `H_t = (z_{t-k+1}, ..., z_t)`
 - `a_real = sampled LunarLander action`
-- `delta_z = z_{t+1} - z_t`
+- `delta_z = z_{t+s} - z_t`, where adaptive stride `s <= max_stride` advances the environment until latent motion reaches `min_delta_norm` or the episode ends
 
 ```bash
 export PYTHONPATH=src
@@ -130,8 +159,8 @@ runs/action_inference/experiments/
 Use one shared `ACTION_EXPERIMENT_ID` for the whole research run:
 
 ```bash
-export ACTION_EXPERIMENT_ID=$(date +%Y%m%d_%H%M%S)_delta_debug
-export ACTION_EXPERIMENT_HYPOTHESIS="FDM delta target should keep IDM latent action useful and improve runtime action search."
+export ACTION_EXPERIMENT_ID=001_vanilla_baseline
+export ACTION_EXPERIMENT_HYPOTHESIS="Baseline full pipeline run used to locate the first broken diagnostic step."
 export ACTION_EXPERIMENT_SEED=42
 ```
 
@@ -151,13 +180,21 @@ All runs are indexed in:
 runs/action_inference/experiments/runs_index.csv
 ```
 
+TensorBoard logs include the same run id:
+
+```txt
+runs/action_inference/video_learner/tensorboard/train/001_vanilla_baseline/
+runs/action_inference/machine_forward/tensorboard/train/001_vanilla_baseline/
+runs/action_inference/runtime_control/tensorboard/eval/001_vanilla_baseline/
+```
+
 | Section | Short explanation | Models trained | Output |
 |---|-------|---|---|
 | Autoencoder | Compresses frame into latent vector | $AE$ | $z_t = AE(o_t)$ |
 | Sequential | Encodes latent history into hidden state | $LSTM$ | $h_t = LSTM(H_t)$ |
 | Video Learner | Learns latent action and latent change from video context | $IDM$, $FDM$ | $\tilde{a}_t = IDM(c_t)$, $\Delta z_{t+1}^{pred} = FDM(c_t, \tilde{a}_t)$ |
-| Machine Forward | Learns how true action changes latent state | $MachineForwardModel$ | $\Delta z_{t+1}^{pred,machine} = MachineForward(H_t^{machine}, a_t^{true})$ |
-| Runtime Control | Searches true action that matches desired latent change | none | $a_t^* = \arg\min_a \Vert \Delta z_{t+1}^{machine}(a) - \Delta z_{t+1}^{desired} \Vert^2$ |
+| Machine Forward | Learns how true action changes latent state over adaptive stride | $MachineForwardModel$ | $\Delta z_{t+s}^{pred,machine} = MachineForward(H_t^{machine}, a_t^{true})$ |
+| Runtime Control | Searches true action that matches desired latent change | none | $a_t^* = \arg\min_a \Vert \Delta z_{t+s}^{machine}(a) - \Delta z_{t+1}^{desired} \Vert^2 + \lambda \Vert a \Vert^2$ |
 
 ## Global Diagnostic Features
 
@@ -166,6 +203,12 @@ runs/action_inference/experiments/runs_index.csv
 | `global_00_globalfeatures` | * shape<br>* dtype<br>* device<br>* mean / std / min / max<br>* nan / inf count<br>* norm<br>* histogram<br>* sample image / video when decodable |
 
 ## Video Learner
+
+Plain words:
+
+- watches video only
+- invents a hidden latent action
+- learns the latent movement from current frame to next frame
 
 | Description | Step Name | Formula | Step Specific Diagnostic Features |
 |---|---|---|---|
@@ -210,19 +253,26 @@ is still a latent action, not a real LunarLander action. The failure happens lat
 
 ## Machine Forward
 
+Plain words:
+
+- samples random real LunarLander actions
+- applies them in the environment
+- measures the latent change they caused
+- learns what each real action does in latent space
+
 | Description | Step Name | Formula | Step Specific Diagnostic Features |
 |---|---|---|---|
 | Select random action, e.g. `[main thrust, side thrust] = [0.8, -0.3]` | `machine_forward_01_sampleaction` | $a_t^{true} = sample_{probe}(\mathcal{A})$ | * action mean / std / min / max<br>* action coverage over $[-1, 1]^2$ |
-| Feed the LunarLander environment with current true frame and random true action | `machine_forward_02_envstep` | $o_{t+1}^{true} = Env(o_t^{true}, a_t^{true})$ | * frame transition preview<br>* episode length<br>* terminated / truncated rate |
+| Feed the LunarLander environment with current true frame and random true action until enough latent motion or max stride | `machine_forward_02_envstep` | $o_{t+s}^{true} = Env^s(o_t^{true}, a_t^{true})$ | * frame transition preview<br>* episode length<br>* adaptive stride<br>* terminated / truncated rate |
 | Create latent for current true frame | `machine_forward_03_currentlatent` | $z_t^{true} = AE(o_t^{true})$ | * AE reconstruction MSE<br>* decoded $z_t^{true}$ preview |
 | Build history of true latents | `machine_forward_04_machinehistory` | $H_t^{machine} = (z_{t-k+1}^{true}, z_{t-k+2}^{true}, ..., z_t^{true})$ | * machine history length $k_m$<br>* latent drift over machine window |
-| Create latent for next true frame | `machine_forward_05_nextlatent` | $z_{t+1}^{true} = AE(o_{t+1}^{true})$ | * $z_{t+1}^{true}$ decoded preview<br>* $z_{t+1}^{true}$ vs $z_t^{true}$ distance |
+| Create latent for reached true frame | `machine_forward_05_nextlatent` | $z_{t+s}^{true} = AE(o_{t+s}^{true})$ | * $z_{t+s}^{true}$ decoded preview<br>* $z_{t+s}^{true}$ vs $z_t^{true}$ distance |
 | Get hidden state from LSTM run on history of true latents | `machine_forward_06_encodehistory` | $h_t^{machine} = EncodeHistory(H_t^{machine})$ | * $h_t^{machine}$ activation distribution<br>* history encoder hidden norm |
 | Concatenate hidden state of true latent history and true action | `machine_forward_07_machineinput` | $x_t^{machine} = concat(h_t^{machine}, a_t^{true})$ | * $h_t^{machine}$ norm vs $a_t^{true}$ norm<br>* concat dimension check |
-| Calculate true latent change caused by true action | `machine_forward_08_true_delta` | $\Delta z_{t+1}^{true} = z_{t+1}^{true} - z_t^{true}$ | * true delta norm<br>* true delta distribution<br>* zero-delta baseline MSE |
-| Get predicted latent change from MachineForward | `machine_forward_09_pred_delta` | $\Delta z_{t+1}^{pred,machine} = MachineForward(x_t^{machine})$ | * pred delta norm<br>* pred vs true delta cosine<br>* action sensitivity |
-| Build predicted next latent from current true latent and predicted latent change | `machine_forward_10_build_nextlatent` | $z_{t+1}^{pred,machine} = z_t^{true} + \Delta z_{t+1}^{pred,machine}$ | * decoded predicted next frame<br>* predicted next vs true next latent distance |
-| Calculate MSE loss between predicted next latent and true next latent | `machine_forward_11_loss` | $L_{machine} = \Vert z_{t+1}^{pred,machine} - z_{t+1}^{true} \Vert^2$ | * machine MSE<br>* zero baseline MSE<br>* zero/machine ratio<br>* loss curve |
+| Calculate true latent change caused by true action over adaptive stride | `machine_forward_08_true_delta` | $\Delta z_{t+s}^{true} = z_{t+s}^{true} - z_t^{true}$ | * true delta norm<br>* true delta distribution<br>* zero-delta baseline MSE |
+| Get predicted latent change from MachineForward | `machine_forward_09_pred_delta` | $\Delta z_{t+s}^{pred,machine} = MachineForward(x_t^{machine})$ | * pred delta norm<br>* pred vs true delta cosine<br>* action sensitivity |
+| Build predicted next latent from current true latent and predicted latent change | `machine_forward_10_build_nextlatent` | $z_{t+s}^{pred,machine} = z_t^{true} + \Delta z_{t+s}^{pred,machine}$ | * decoded predicted next frame<br>* predicted next vs true next latent distance |
+| Calculate MSE loss between predicted next latent and true next latent | `machine_forward_11_loss` | $L_{machine} = \Vert z_{t+s}^{pred,machine} - z_{t+s}^{true} \Vert^2$ | * machine MSE<br>* zero baseline MSE<br>* zero/machine ratio<br>* loss curve |
 | Research note: delta target works better than direct next-latent target | `machine_forward_12_delta_research` | $\Delta z_{t+1}^{pred,machine} \text{ beats } z_{t+1}^{pred,machine}$ | * delta-target MSE vs direct-next-latent MSE |
 
 
@@ -230,17 +280,24 @@ Machine Forward itself is not the current failure point.
 
 It learns:
 
-$$ MachineForward(concat(EncodeHistory(H_t^{machine}), a_t^{true})) \rightarrow \Delta z_{t+1}^{pred,machine} $$
+$$ MachineForward(concat(EncodeHistory(H_t^{machine}), a_t^{true})) \rightarrow \Delta z_{t+s}^{pred,machine} $$
 
 and beats the zero baseline:
 
 $$ MSE_{machine} < MSE_{zero} $$
 
-So the model has learned that real LunarLander actions produce predictable movement in latent space.
+So the model has learned that real LunarLander actions produce predictable movement in latent space over adaptive stride.
 
-The failure happens after Machine Forward, in Runtime Control: the action search uses Machine Forward correctly, but currently chooses actions too close to zero because the action penalty is too strong.
+The failure happens after Machine Forward, in Runtime Control: the action search uses a stride-trained Machine Forward model while the desired delta still comes from the video-step FDM signal.
 
 ## Runtime Control
+
+Plain words:
+
+- takes the latent movement wanted by Video Learner
+- tests many real actions with Machine Forward
+- picks the real action whose predicted movement best matches the wanted movement
+
 | Description | Step Name | Formula | Step Specific Diagnostic Features |
 |---|---|---|---|
 | Create latents for all frames in history | `runtime_control_01_getlatent` | $z_i = AE(o_i)$ | * AE reconstruction MSE<br>* decoded latent preview |
@@ -252,12 +309,12 @@ The failure happens after Machine Forward, in Runtime Control: the action search
 | Create representation of current state from current latent, hidden state of movement history latents and latent of overlay | `runtime_control_07_context` | $c_t = concat(z_t, h_t, m_t)$ | * component norms: $z_t$ / $h_t$ / $m_t$<br>* concat dimension check |
 | Generate action inferred by pretrained IDM from current representation | `runtime_control_08_idm_latentaction` | $\tilde{a}_t = IDM(c_t)$ | * latent action mean / std / min / max<br>* saturation<br>* dead dimensions |
 | Concatenate current representation and predicted action | `runtime_control_09_fdm_input` | $x_t^{fdm} = concat(c_t, \tilde{a}_t)$ | * $c_t$ norm vs $\tilde{a}_t$ norm<br>* concat dimension check |
-| Infer desired latent change by pretrained FDM on concatenated representation of current state and predicted latent action | `runtime_control_10_desired_delta` | $\Delta z_{t+1}^{desired} = FDM(x_t^{fdm})$ | * desired delta norm<br>* desired delta distribution<br>* desired delta vs machine reachable delta range |
+| Infer desired latent change by pretrained FDM on concatenated representation of current state and predicted latent action | `runtime_control_10_desired_delta` | $\Delta z_{t+1}^{desired} = \alpha FDM(x_t^{fdm})$ | * desired delta norm<br>* desired delta distribution<br>* desired delta vs machine reachable delta range |
 | Get hidden state of machine history latents | `runtime_control_11_machine_hidden` | $h_t^{machine} = EncodeHistory(H_t^{machine})$ | * $h_t^{machine}$ activation distribution<br>* machine hidden norm |
-| Sample many candidate real actions for search | `runtime_control_12_candidate_actions` | $a^{(j)} \sim Uniform([-1, 1]^2),\ j=1,\dots,N$ | * candidate action coverage<br>* candidate action mean / std<br>* boundary coverage |
+| Sample many candidate real actions for search | `runtime_control_12_candidate_actions` | $a^{(j)} \sim Uniform([action\_low, action\_high]^2),\ j=1,\dots,N$ | * candidate action coverage<br>* candidate action mean / std<br>* boundary coverage |
 | Concatenate machine hidden state with each candidate action | `runtime_control_13_machine_input` | $x_t^{machine}(a^{(j)}) = concat(h_t^{machine}, a^{(j)})$ | * $h_t^{machine}$ norm vs candidate action norm<br>* batch dimension check |
-| Predict latent change for each candidate action | `runtime_control_14_machine_candidate_delta` | $\Delta z_{t+1}^{machine}(a^{(j)}) = MachineForward(x_t^{machine}(a^{(j)}))$ | * candidate delta spread<br>* action sensitivity<br>* reachable delta range |
-| Choose candidate action whose predicted latent change is closest to desired latent change | `runtime_control_15_chooseaction` | $a_t^* = \arg\min_{a^{(j)}} \Vert \Delta z_{t+1}^{machine}(a^{(j)}) - \Delta z_{t+1}^{desired} \Vert^2$ | * selected action distribution<br>* search loss<br>* best-vs-median candidate loss<br>* action L2 penalty contribution |
+| Predict latent change for each candidate action | `runtime_control_14_machine_candidate_delta` | $\Delta z_{t+s}^{machine}(a^{(j)}) = MachineForward(x_t^{machine}(a^{(j)}))$ | * candidate delta spread<br>* action sensitivity<br>* reachable delta range |
+| Choose candidate action whose predicted latent change is closest to desired latent change | `runtime_control_15_chooseaction` | $a_t^* = \arg\min_{a^{(j)}} \Vert \Delta z_{t+s}^{machine}(a^{(j)}) - \Delta z_{t+1}^{desired} \Vert^2 + \lambda \Vert a^{(j)} \Vert^2$ | * selected action distribution<br>* search loss<br>* best-vs-median candidate loss<br>* action L2 penalty contribution |
 | Apply selected best action in LunarLander environment | `runtime_control_16_applyaction` | $o_{t+1} = Env(o_t, a_t^*)$ | * rollout reward<br>* episode length<br>* action trace<br>* rollout mp4 |
 
 Runtime Control currently fails at the action-search layer.
@@ -270,18 +327,44 @@ The lander receives almost no thrust and falls down.
 
 Cause:
 
-$$ L_{search} = || \Delta z_{t+1}^{machine}(a) - \Delta z_{t+1}^{desired} ||^2 + \lambda ||a||^2 $$
+$$ L_{search} = || \Delta z_{t+s}^{machine}(a) - \Delta z_{t+1}^{desired} ||^2 + \lambda ||a||^2 $$
 
-Current penalty is too high:
+Machine Forward is trained on adaptive-stride deltas:
+
+$$ \Delta z_{t+s}^{machine} $$
+
+while Runtime Control compares it to the video-step desired delta:
+
+$$ \Delta z_{t+1}^{desired} $$
+
+Current code also applies:
+
+$$ \alpha = 1.5 $$
+
+through `delta_z_scale`, and keeps:
 
 $$ \lambda = 0.05 $$
 
-So the optimizer prefers near-zero actions over useful thrust.
+through `action_l2_penalty`.
 
-Immediate fix:
+So the current failure is a combination of scale mismatch and action penalty: the selected real actions collapse near zero even though Video Learner and Machine Forward are individually healthy.
 
-$$ \lambda \approx 0.0001 $$
+Current TensorBoard caveat:
 
-and use full action range:
+`runtime_control_14_machine_candidate_delta` currently logs `search_losses`, not real candidate deltas. Real candidate-delta logging still needs to be added before using that card as evidence.
 
-$$ a \in [-1, 1]^2 $$
+Immediate fix to test:
+
+$$ \Delta z^{desired}_{runtime} = \beta \Delta z_{t+1}^{desired} $$
+
+with:
+
+$$ \beta \approx \frac{1}{E[s]} $$
+
+and a lower action penalty than:
+
+$$ \lambda = 0.05 $$
+
+while using the configured action range:
+
+$$ a \in [action\_low, action\_high]^2 $$
