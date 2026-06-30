@@ -1,3 +1,15 @@
+# vid-to-pol
+
+Video-to-policy research pipeline for inferring LunarLander controls from visual transitions.
+
+## Start Here
+
+Open the main notebook:
+
+[vid-to-pol.deconstruction](Student/research/vid-to-pol.deconstruction.ipynb)
+
+It is the compact, self-contained walkthrough of the video-to-policy pipeline. The sections below document the full project structure and command-line workflow.
+
 ## Project Summary
 
 This model tries to infer control from video. It watches LunarLander frames, learns the latent movement implied by the video, learns how real environment actions move the same latent space, and then searches for a real action that best matches the video-implied movement.
