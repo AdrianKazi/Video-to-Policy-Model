@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+
+generated_videos/
+external_videos/
+
+*.pt
+*.mp4
+*.avi
+*.webm
+*.part
+
+.DS_Store

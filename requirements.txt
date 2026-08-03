@@ -1,0 +1,8 @@
+gymnasium[box2d]
+ipykernel
+notebook
+numpy
+matplotlib
+imageio
+pillow
+opencv-python
