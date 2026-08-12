@@ -181,6 +181,10 @@ YOLO detections are shown on the independent random YouTube driving clip. The no
 
 YOLO detections are shown on the independent hardest YouTube vehicle/crowd clip. The notebook displays the full local 3-minute clip, an annotated sampled frame, and people/vehicle count plots over sampled frames.
 
+Each object detection subsection now renders a short annotated video clip with YOLO boxes and model-assigned class names. The plot remains as a summary over all loaded or sampled frames.
+
+Detection now also has a lightweight tracking layer. YOLO still detects objects frame by frame, but the notebook links matching boxes over time with IoU and assigns a `track_id`. This makes it visible when a detected object persists, disappears, reappears, or gets split into a new track.
+
 ## Object Segmentation
 
 This section uses SAM-style class-agnostic mask proposals through `FastSAM`. Unlike object detection, the segmentation step does not assign semantic classes such as `person` or `car`.
@@ -210,9 +214,47 @@ Each blob object is represented as:
 - centroid
 - optional bounding box as a derived geometry feature
 
-The notebook displays both box visualizations and colored mask overlays with mask boundaries. Both variants plot mask count plus total mask area over sampled frames for each visual problem.
+The notebook displays short segmentation videos for both variants. `Object Segmentation Box` renders boxes and centroids over a short clip. `Object Segmentation Blob` renders colored masks, mask boundaries, and centroids over a short clip. Both variants plot mask count plus total mask area over sampled frames for each visual problem.
 
-Each segmentation subsection ends with a data representation table. Box experiments expose columns such as `object_id`, `area`, `centroid_x`, `centroid_y`, `x1`, `y1`, `x2`, `y2`, `width`, and `height`. Blob experiments expose `object_id`, `area`, centroid coordinates, `mask_shape`, `mask_pixels`, and a sampled list of boundary points.
+Each segmentation subsection ends with a data representation table. Box experiments expose columns such as `frame`, `track_id`, `object_id`, `area`, `centroid_x`, `centroid_y`, `x1`, `y1`, `x2`, `y2`, `width`, and `height`. Blob experiments expose `frame`, `track_id`, `object_id`, `area`, centroid coordinates, `mask_shape`, `mask_pixels`, and a sampled list of boundary points.
+
+Segmentation tracking is also heuristic. FastSAM proposes masks independently per frame, then the notebook links masks across frames by mask IoU. `object_id` is local to a single frame. `track_id` is the temporal identity candidate used for future trajectory and action encoding.
+
+## Background Segmentation
+
+Background segmentation is dynamic, not static. The goal is not only to mark background pixels, but to track reference points on the background across time.
+
+The notebook uses Lucas-Kanade optical flow:
+
+```text
+background_point_t -> background_point_t+1
+```
+
+For each visual problem, the notebook:
+
+1. Selects trackable image points with `cv2.goodFeaturesToTrack`.
+2. Tracks them into the next frame with `cv2.calcOpticalFlowPyrLK`.
+3. Estimates dominant background motion from the median point flow.
+4. Marks points close to the dominant motion as `is_background`.
+5. Shows a short video with motion arrows.
+6. Plots point motion vectors and speed distribution.
+7. Displays a data table.
+
+Each background tracking table exposes:
+
+- `point_id`
+- `x_t`, `y_t`
+- `x_t1`, `y_t1`
+- `dx`, `dy`
+- `speed`
+- `residual_from_dominant_motion`
+- `is_background`
+
+This section is the first step toward defining action relative to the scene:
+
+```text
+relative_action = object_motion - local_background_motion
+```
 
 ## Experiment Structure
 
@@ -232,11 +274,12 @@ Each experiment should define:
 
 ## Current Project State
 
-The notebook now has three main experimental layers:
+The notebook now has four main experimental layers:
 
 1. `Visual Problems`
 2. `Object Detection`
 3. `Object Segmentation`
+4. `Background Segmentation`
 
 The current visual problem ladder is:
 
@@ -256,6 +299,14 @@ The segmentation layer has two parallel experiments:
 - `Object Segmentation Blob`: keep the full mask shape, mask boundary, centroid, and sampled boundary points.
 
 Each segmentation experiment ends with a data representation table. This makes the output usable for the next stages: point extraction, tracking, trajectory construction, and action encoding.
+
+The current notebook now explicitly separates:
+
+```text
+per-frame object proposal -> temporal track_id -> geometry table -> future action vector
+```
+
+This is the first concrete bridge from visual perception to action inference. The immediate next step is to define action from tracked object geometry relative to tracked background motion.
 
 ## Notes On Oversegmentation
 

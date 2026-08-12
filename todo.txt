@@ -1,0 +1,9 @@
+cel:
+
+1. blobujemy agentow 
+2. znajdujemy background
+3. z blobow agentow wyznaczamy 6 punktow, srodkowy i 5 najabrdziej zewnetrznych, tzw. control points
+4. liczymy przesuniecia control pointsów od backgroundu, dzieki temu widzimy jak agent porusza sie względem jego swiata
+5. przesuniecia to encodowane akcje
+6. trenujemy foundation model na wielu filmach ale prawdziwych, nie bajkach, nie animacjach bo model nauczy sie niefizycznych zachowań
+7. zakladamy ze model bedzie w stanie przeprowadzic Action Inference

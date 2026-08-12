@@ -2,7 +2,15 @@ gymnasium[box2d]
 ipykernel
 notebook
 numpy
+pandas
 matplotlib
 imageio
 pillow
 opencv-python
+openai
+python-dotenv
+requests
+transformers
+accelerate
+imageio[ffmpeg]
+git+https://github.com/facebookresearch/vggt.git
