@@ -256,6 +256,209 @@ This section is the first step toward defining action relative to the scene:
 relative_action = object_motion - local_background_motion
 ```
 
+## Current Action Encoding Direction
+
+The current research direction is to encode action as a relation between:
+
+1. control points of a segmented blob/object
+2. background optical-flow points of the full frame
+
+The action target should not be the next raw frame:
+
+```text
+frame_t+1_pred vs frame_t+1_true
+```
+
+Instead, the loss should compare the next predicted relation representation:
+
+```text
+background_control_points_relation_t+1_pred
+vs
+background_control_points_relation_t+1_true
+```
+
+### Control-Point Blob Representation
+
+For object or track `i` in frame `t`, the segmented blob is represented by `K`
+ordered control points:
+
+```math
+P_{i,t} =
+\begin{bmatrix}
+p_{i,t}^{(1)} \\
+p_{i,t}^{(2)} \\
+\vdots \\
+p_{i,t}^{(K)}
+\end{bmatrix}
+=
+\begin{bmatrix}
+x_{i,t}^{(1)} & y_{i,t}^{(1)} \\
+x_{i,t}^{(2)} & y_{i,t}^{(2)} \\
+\vdots & \vdots \\
+x_{i,t}^{(K)} & y_{i,t}^{(K)}
+\end{bmatrix}
+\in \mathbb{R}^{K \times 2}
+```
+
+where:
+
+- `P_{i,t}` is all `K` control points of segmentation blob/object `i` in frame `t`.
+- `i` is the object or track index, corresponding to `track_id`.
+- `t` is the frame index.
+- `p_{i,t}^{(k)} = [x_{i,t}^{(k)}, y_{i,t}^{(k)}]` is the `k`-th control point of object `i` in frame `t`.
+
+The current control-point table is a long-table representation of these matrices:
+
+```text
+frame, track_id, point_name, x, y, box_x1, box_y1, box_x2, box_y2
+```
+
+The bounding box columns are metadata. They are not part of `P_{i,t}`. They may
+later be useful for scale normalization, but should not immediately be used to
+select local background points.
+
+### Background Flow Representation
+
+For frame `t`, the background is represented by `N` selected background
+optical-flow points. The current working setup samples a fixed number of points
+per frame so the action embedding has a stable shape.
+
+```math
+B_t =\begin{bmatrix}b_t^{(1)} \\b_t^{(2)} \\\vdots \\b_t^{(N)}\end{bmatrix}=\begin{bmatrix}x_{bckg,t}^{(1)} & y_{bckg,t}^{(1)} & dx_{bckg,t}^{(1)} & dy_{bckg,t}^{(1)} \\x_{bckg,t}^{(2)} & y_{bckg,t}^{(2)} & dx_{bckg,t}^{(2)} & dy_{bckg,t}^{(2)} \\\vdots & \vdots & \vdots & \vdots \\x_{bckg,t}^{(N)} & y_{bckg,t}^{(N)} & dx_{bckg,t}^{(N)} & dy_{bckg,t}^{(N)}\end{bmatrix}\in \mathbb{R}^{N \times 4}
+```
+
+where:
+
+- `B_t` is the selected background optical-flow point set in frame `t`.
+- `N` is the fixed number of selected background points per frame.
+- `b_t^{(j)} = [x_{bckg,t}^{(j)}, y_{bckg,t}^{(j)}, dx_{bckg,t}^{(j)}, dy_{bckg,t}^{(j)}]` is the `j`-th selected background point in frame `t`.
+- `x_{bckg,t}^{(j)}, y_{bckg,t}^{(j)}` are the image coordinates of the `j`-th selected background point.
+- `dx_{bckg,t}^{(j)}, dy_{bckg,t}^{(j)}` are the optical-flow displacement of that point from frame `t-1` to frame `t`.
+
+The scalar speed of each selected background point is a derived feature:
+
+```math
+s_{bckg,t}^{(j)} = \sqrt{\left(dx_{bckg,t}^{(j)}\right)^2 + \left(dy_{bckg,t}^{(j)}\right)^2}
+```
+
+The previous `valid` / `prev_valid` columns are kept as metadata, but the current
+action embedding definition is based on selected background point coordinates.
+
+### Multiplicative Object-Background Relation
+
+The current action embedding is a multiplicative pairwise relation between the
+object control-point coordinates and the selected background point coordinates.
+
+```math
+A^x_{i,t} = \underbrace{\begin{bmatrix} x_{cp,i,t}^{(1)} \\ x_{cp,i,t}^{(2)} \\ \vdots \\ x_{cp,i,t}^{(K)} \end{bmatrix}}_{X_{cp,i,t} \in \mathbb{R}^{K \times 1}} \; \underbrace{\begin{bmatrix} x_{bckg,t}^{(1)} \\ x_{bckg,t}^{(2)} \\ \vdots \\ x_{bckg,t}^{(N)} \end{bmatrix}^{T}}_{X_{bckg,t}^{T} \in \mathbb{R}^{1 \times N}}
+```
+
+```math
+A^y_{i,t} = \underbrace{\begin{bmatrix} y_{cp,i,t}^{(1)} \\ y_{cp,i,t}^{(2)} \\ \vdots \\ y_{cp,i,t}^{(K)} \end{bmatrix}}_{Y_{cp,i,t} \in \mathbb{R}^{K \times 1}} \; \underbrace{\begin{bmatrix} y_{bckg,t}^{(1)} \\ y_{bckg,t}^{(2)} \\ \vdots \\ y_{bckg,t}^{(N)} \end{bmatrix}^{T}}_{Y_{bckg,t}^{T} \in \mathbb{R}^{1 \times N}}
+```
+
+This is an outer product, not a dot product. A column vector multiplied by a
+transposed column vector produces a matrix.
+
+```math
+A^x_{i,t} \in \mathbb{R}^{K \times N}, \quad A^y_{i,t} \in \mathbb{R}^{K \times N}
+```
+
+Each entry stores one multiplicative relation between one control point and one
+selected background point.
+
+```math
+A^x_{i,t}(k,j) = x_{cp,i,t}^{(k)} x_{bckg,t}^{(j)}
+```
+
+```math
+A^y_{i,t}(k,j) = y_{cp,i,t}^{(k)} y_{bckg,t}^{(j)}
+```
+
+The full action embedding stacks the x-relation matrix and the y-relation
+matrix.
+
+```math
+A_{i,t} = \left(A^x_{i,t}, A^y_{i,t}\right) \in \mathbb{R}^{K \times N \times 2}
+```
+
+For the current Lunar Lander example:
+
+```text
+K = 6 control points
+N = 100 selected background points
+A_i,t shape = 6 x 100 x 2
+flattened vector length = 1200
+```
+
+The conceptual background dimension is `N = 100`. The flattened vector length is
+the implementation shape used by a PyTorch transformer block when the full
+relation tensor is flattened.
+
+Before using the action embedding as model input, the current notebook applies
+per-frame min-max normalization:
+
+```math
+A^{norm}_{i,t} = \frac{A_{i,t} - \min(A_{i,t})}{\max(A_{i,t}) - \min(A_{i,t}) + \epsilon}
+```
+
+The normalized flattened token is:
+
+```math
+z_{i,t} = \operatorname{flatten}(A^{norm}_{i,t})
+```
+
+where:
+
+- `z_{i,t}` is the normalized action embedding token for object `i` in frame `t`.
+- `epsilon` is a small constant for numerical stability.
+
+The current sanity check plots temporal change:
+
+```math
+\|A^{norm}_{i,t} - A^{norm}_{i,t-1}\|
+```
+
+This measures how much the normalized action embedding changes between
+consecutive frames. The y-axis can be larger than 1 because it is the L2 norm of
+a high-dimensional flattened vector, not a single normalized scalar.
+
+### Transformer Baseline Direction
+
+The Cohen course transformer can be reused as a baseline after changing it from
+a language model into an action-embedding sequence regressor.
+
+The language-model setup is:
+
+```text
+input: token ids
+output: logits over vocabulary
+loss: cross entropy / NLL
+```
+
+The action-embedding setup should be:
+
+```text
+input: normalized action embedding vectors z_i,t
+output: predicted next normalized action embedding vector z_i,t+1
+loss: MSE
+```
+
+So the baseline should remove:
+
+- `nn.Embedding(n_vocab, embed_dim)` token lookup
+- final logits over `n_vocab`
+- `NLLLoss` / cross entropy
+- sampling-based text generation
+
+And keep:
+
+- positional embeddings
+- causal self-attention blocks
+- MLP transformer blocks
+- final linear projection from flattened vector length to flattened vector length
+- MSE loss for next-embedding prediction
+
 ## Experiment Structure
 
 Each experiment should follow the same structure:
