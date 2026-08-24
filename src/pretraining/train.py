@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/action_inference_matplotlib")
 import matplotlib.pyplot as plt
@@ -7,23 +8,85 @@ import torch
 import torch.nn as nn
 
 from src.pretraining.dataset import get_data_batch
+from src.pretraining.config import (
+    BATCH_SIZE,
+    CHECKPOINT_EVERY,
+    DROPOUT,
+    EMBED_DIM,
+    LEARNING_RATE,
+    N_BLOCKS,
+    N_HEADS,
+    NUM_TRAINING_STEPS,
+    SEQ_LEN,
+    START_FROM,
+    WEIGHT_DECAY,
+)
 from src.pretraining.model import ActionEmbeddingModel
+
+
+def latest_checkpoint_path(checkpoint_dir):
+    checkpoint_dir = Path(checkpoint_dir)
+    checkpoints = sorted(checkpoint_dir.glob("action_embedding_transformer_step_*.pt"))
+    if not checkpoints:
+        return None
+
+    return checkpoints[-1]
+
+
+def resolve_start_checkpoint(start_from):
+    if start_from in (None, "start"):
+        return None
+
+    start_path = Path(start_from)
+    if start_path.is_dir():
+        checkpoint_path = latest_checkpoint_path(start_path)
+        if checkpoint_path is None:
+            raise FileNotFoundError(f"No checkpoints found in {start_path}")
+        return checkpoint_path
+
+    if not start_path.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {start_path}")
+
+    return start_path
+
+
+def save_checkpoint(model, optimizer, history, step, checkpoint_dir, config=None):
+    checkpoint_dir = Path(checkpoint_dir)
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_path = checkpoint_dir / f"action_embedding_transformer_step_{step:06d}.pt"
+
+    torch.save(
+        {
+            "step": int(step),
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "history": history,
+            "config": config or {},
+        },
+        checkpoint_path,
+    )
+
+    return checkpoint_path
 
 
 def train_transformer(
     train_sequences,
     test_sequences,
     flattened_dim,
-    seq_len=4,
-    batch_size=8,
-    embed_dim=256,
-    n_heads=4,
-    n_blocks=4,
-    dropout=0.1,
-    num_samples=100,
-    lr=0.001,
-    weight_decay=0.01,
+    seq_len=SEQ_LEN,
+    batch_size=BATCH_SIZE,
+    embed_dim=EMBED_DIM,
+    n_heads=N_HEADS,
+    n_blocks=N_BLOCKS,
+    dropout=DROPOUT,
+    num_samples=NUM_TRAINING_STEPS,
+    lr=LEARNING_RATE,
+    weight_decay=WEIGHT_DECAY,
     device=None,
+    start_from=START_FROM,
+    checkpoint_dir=None,
+    checkpoint_every=CHECKPOINT_EVERY,
+    config=None,
 ):
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     model = ActionEmbeddingModel(
@@ -39,8 +102,25 @@ def train_transformer(
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     train_loss = []
     test_loss = []
+    start_step = 0
 
-    for step in range(num_samples):
+    checkpoint_path = resolve_start_checkpoint(start_from)
+
+    if checkpoint_path is not None:
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"])
+
+        if "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+        history = checkpoint.get("history", {})
+        train_loss = list(history.get("train_loss", []))
+        test_loss = list(history.get("test_loss", []))
+        start_step = int(checkpoint.get("step", len(train_loss)))
+        print(f"resumed checkpoint: {checkpoint_path}")
+        print(f"start_step: {start_step}")
+
+    for step in range(start_step, num_samples):
         X, y = get_data_batch(train_sequences, seq_len=seq_len, batch_size=batch_size)
         model.zero_grad(set_to_none=True)
         pred = model(X.to(device))
@@ -63,11 +143,28 @@ def train_transformer(
             f"test_loss={test_loss[-1]:.6f}"
         )
 
-    return model, {"train_loss": train_loss, "test_loss": test_loss}
+        if (
+            checkpoint_dir is not None
+            and checkpoint_every is not None
+            and checkpoint_every > 0
+            and (step + 1) % checkpoint_every == 0
+        ):
+            saved_path = save_checkpoint(
+                model,
+                optimizer,
+                {"train_loss": train_loss, "test_loss": test_loss},
+                step + 1,
+                checkpoint_dir,
+                config=config,
+            )
+            print("saved checkpoint:", saved_path)
+
+    return model, optimizer, {"train_loss": train_loss, "test_loss": test_loss}
 
 
 def save_training_run(
     model,
+    optimizer,
     history,
     model_path,
     history_path,
@@ -83,6 +180,9 @@ def save_training_run(
 
     checkpoint = {
         "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict() if optimizer is not None else None,
+        "step": len(history.get("train_loss", [])),
+        "history": history,
         "config": config or {},
     }
 

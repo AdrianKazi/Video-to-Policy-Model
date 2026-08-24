@@ -4,6 +4,7 @@ __pycache__/
 
 models/
 generated_videos/
+notebooks/artifacts/
 artifacts/raw_videos/
 artifacts/pretrain/
 artifacts/research/

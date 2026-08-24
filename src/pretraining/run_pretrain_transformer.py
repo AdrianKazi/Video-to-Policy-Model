@@ -1,6 +1,24 @@
 import pickle
 
-from src.pretraining.config import ACTION_EMBEDDINGS_DIR, LOGS_DIR, MODELS_DIR, PLOTS_DIR, ensure_dirs
+from src.pretraining.config import (
+    ACTION_EMBEDDINGS_DIR,
+    BATCH_SIZE,
+    CHECKPOINTS_DIR,
+    CHECKPOINT_EVERY,
+    DROPOUT,
+    EMBED_DIM,
+    LEARNING_RATE,
+    LOGS_DIR,
+    MODELS_DIR,
+    N_BLOCKS,
+    N_HEADS,
+    NUM_TRAINING_STEPS,
+    PLOTS_DIR,
+    SEQ_LEN,
+    START_FROM,
+    WEIGHT_DECAY,
+    ensure_dirs,
+)
 from src.pretraining.dataset import build_sequences_from_embeddings, get_data_batch, split_sequences
 from src.pretraining.train import save_training_run, train_transformer
 
@@ -12,36 +30,28 @@ def main():
     with embeddings_path.open("rb") as f:
         embeddings = pickle.load(f)
 
-    seq_len = 4
-    batch_size = 8
-    embed_dim = 256
-    n_heads = 4
-    n_blocks = 4
-    dropout = 0.1
-    num_samples = 100
-    lr = 0.001
-    weight_decay = 0.01
-
-    sequences = build_sequences_from_embeddings(embeddings, seq_len=seq_len)
+    sequences = build_sequences_from_embeddings(embeddings, seq_len=SEQ_LEN)
     train_sequences, test_sequences = split_sequences(sequences)
     flattened_dim = sequences[0]["tokens"].shape[-1]
     sample_token = sequences[0]["tokens"][0]
 
     config = {
-        "seq_len": seq_len,
-        "batch_size": batch_size,
-        "embed_dim": embed_dim,
-        "n_heads": n_heads,
-        "n_blocks": n_blocks,
-        "dropout": dropout,
-        "num_samples": num_samples,
-        "lr": lr,
-        "weight_decay": weight_decay,
+        "seq_len": SEQ_LEN,
+        "batch_size": BATCH_SIZE,
+        "embed_dim": EMBED_DIM,
+        "n_heads": N_HEADS,
+        "n_blocks": N_BLOCKS,
+        "dropout": DROPOUT,
+        "num_training_steps": NUM_TRAINING_STEPS,
+        "lr": LEARNING_RATE,
+        "weight_decay": WEIGHT_DECAY,
         "flattened_dim": int(flattened_dim),
         "token_shape": list(sample_token.shape),
         "num_sequences": len(sequences),
         "num_train_sequences": len(train_sequences),
         "num_test_sequences": len(test_sequences),
+        "start_from": str(START_FROM),
+        "checkpoint_every": CHECKPOINT_EVERY,
     }
 
     print("sequences:", len(sequences))
@@ -49,25 +59,30 @@ def main():
     print("test_sequences:", len(test_sequences))
     print("flattened_dim:", flattened_dim)
 
-    model, history = train_transformer(
+    model, optimizer, history = train_transformer(
         train_sequences=train_sequences,
         test_sequences=test_sequences,
         flattened_dim=flattened_dim,
-        seq_len=seq_len,
-        batch_size=batch_size,
-        embed_dim=embed_dim,
-        n_heads=n_heads,
-        n_blocks=n_blocks,
-        dropout=dropout,
-        num_samples=num_samples,
-        lr=lr,
-        weight_decay=weight_decay,
+        seq_len=SEQ_LEN,
+        batch_size=BATCH_SIZE,
+        embed_dim=EMBED_DIM,
+        n_heads=N_HEADS,
+        n_blocks=N_BLOCKS,
+        dropout=DROPOUT,
+        num_samples=NUM_TRAINING_STEPS,
+        lr=LEARNING_RATE,
+        weight_decay=WEIGHT_DECAY,
+        start_from=START_FROM,
+        checkpoint_dir=CHECKPOINTS_DIR,
+        checkpoint_every=CHECKPOINT_EVERY,
+        config=config,
     )
 
-    eval_batch = get_data_batch(test_sequences, seq_len=seq_len, batch_size=batch_size)
+    eval_batch = get_data_batch(test_sequences, seq_len=SEQ_LEN, batch_size=BATCH_SIZE)
 
     save_training_run(
         model,
+        optimizer,
         history,
         MODELS_DIR / "action_embedding_transformer.pt",
         LOGS_DIR / "action_embedding_transformer_history.json",
@@ -79,6 +94,7 @@ def main():
     )
 
     print("saved model:", MODELS_DIR / "action_embedding_transformer.pt")
+    print("saved checkpoints dir:", CHECKPOINTS_DIR)
     print("saved config:", MODELS_DIR / "action_embedding_transformer_config.json")
     print("saved history:", LOGS_DIR / "action_embedding_transformer_history.json")
     print("saved loss plot:", PLOTS_DIR / "action_embedding_transformer_loss.png")
