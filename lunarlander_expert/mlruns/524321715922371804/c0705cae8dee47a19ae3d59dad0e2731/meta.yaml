@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/adriankazi/Desktop/Action Inference/lunarlander_expert/mlruns/524321715922371804/c0705cae8dee47a19ae3d59dad0e2731/artifacts
+end_time: 1787432979168
+entry_point_name: ''
+experiment_id: '524321715922371804'
+lifecycle_stage: active
+run_id: c0705cae8dee47a19ae3d59dad0e2731
+run_name: train
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1787432842307
+status: 4
+tags: []
+user_id: adriankazi

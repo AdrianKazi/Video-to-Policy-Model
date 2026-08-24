@@ -4,6 +4,68 @@ This project explores action inference from video without starting from human-de
 
 The core idea is to define an action mathematically as the dynamics of objects over time.
 
+## Repository Layout
+
+The repository is currently separated into code, notebooks, and local artifacts:
+
+```text
+src/
+  pretraining/      # modular action-embedding pretraining pipeline
+
+notebooks/
+  Action_Inference_Experiments_1.ipynb
+  Action_Inference_Experiments_2.ipynb
+  Action_inference_Pretrain.ipynb
+
+artifacts/
+  raw_videos/      # source videos used by research and pretraining
+  research/        # exploratory outputs from earlier notebook experiments
+  pretrain/        # generated pretraining datasets, plots, logs, and models
+
+lunarlander_expert/
+  # expert policy/video generation code for Lunar Lander
+```
+
+Large generated data is intentionally ignored by git, including `artifacts/pretrain/`,
+`artifacts/research/`, `artifacts/raw_videos/`, expert videos, local model weights,
+and media files. The repo should track code, notebooks, and documentation, not
+multi-GB CSV/video artifacts.
+
+### Pretraining Pipeline
+
+The pretraining code lives in `src/pretraining/`. Run it from the project root:
+
+```bash
+python -m src.pretraining.run_control_points
+python -m src.pretraining.run_background_points
+python -m src.pretraining.run_action_embeddings
+python -m src.pretraining.run_pretrain_transformer
+```
+
+The modular pipeline writes outputs to:
+
+```text
+artifacts/pretrain/
+  control_points/
+  background_points/
+  action_embeddings/
+  tokens/
+  models/
+  plots/
+  logs/
+  reviews/
+```
+
+Research artifacts from the earlier exploratory notebooks are kept separately:
+
+```text
+artifacts/research/
+  control_points/
+  background_points/
+  segmentation_and_background/
+  full_masked_movies/
+```
+
 ## Hypothesis
 
 An action is not a word label. An action is a structured transformation of objects across frames.
@@ -140,7 +202,7 @@ The clip is a driving scene with cars and road context. This problem is harder t
 Video source:
 
 - YouTube: https://www.youtube.com/watch?v=7EovwWQIvBo
-- Local clip: `external_videos/problem_4_youtube_random.mp4`
+- Local clip: `artifacts/raw_videos/problem_4_youtube_random.mp4`
 
 ### 5 - Hard Vehicle-Crowd Interaction
 
@@ -155,7 +217,7 @@ The clip is a longer and harder real-world driving scene with dense urban activi
 Video source:
 
 - YouTube: https://www.youtube.com/watch?v=7HaJArMDKgI
-- Local clip: `external_videos/problem_5_youtube_hardest.mp4`
+- Local clip: `artifacts/raw_videos/problem_5_youtube_hardest.mp4`
 
 ## Object Detection
 

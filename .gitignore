@@ -4,9 +4,11 @@ __pycache__/
 
 models/
 generated_videos/
-external_videos/
-
-Action_Inference_Experiments_1.ipynb
+artifacts/raw_videos/
+artifacts/pretrain/
+artifacts/research/
+lunarlander_expert/videos/
+lunarlander_expert/models/
 
 *.pt
 *.mp4
