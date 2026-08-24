@@ -53,18 +53,23 @@ def reduce_background_points(bckg_df):
 
 
 def select_fixed_background_points(bckg_df, n_points=N_BACKGROUND_POINTS):
-    return (
-        bckg_df.sort_values(["episode_id", "frame", "background_point_id"])
-        .groupby(["episode_id", "frame"], group_keys=False)
-        .apply(
-            lambda frame_df: frame_df.sample(
+    sampled_frames = []
+    sorted_df = bckg_df.sort_values(["episode_id", "frame", "background_point_id"])
+
+    for _, frame_df in sorted_df.groupby(["episode_id", "frame"], sort=False):
+        sampled_frames.append(
+            frame_df.sample(
                 n=min(n_points, len(frame_df)),
                 random_state=42,
             )
         )
-        .sort_values(["episode_id", "frame", "background_point_id"])
-        .reset_index(drop=True)
-    )
+
+    if not sampled_frames:
+        return sorted_df.iloc[0:0].copy()
+
+    return pd.concat(sampled_frames, ignore_index=True).sort_values(
+        ["episode_id", "frame", "background_point_id"]
+    ).reset_index(drop=True)
 
 
 def build_action_embeddings(cp_df, bckg_df):
@@ -155,4 +160,3 @@ def save_tokens_per_episode(embeddings, output_dir):
         output_paths.append(output_path)
 
     return output_paths
-

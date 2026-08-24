@@ -1,4 +1,5 @@
 import pickle
+import json
 
 import pandas as pd
 
@@ -36,12 +37,28 @@ def main():
         pickle.dump(embeddings, f)
 
     token_paths = save_tokens_per_episode(embeddings, TOKENS_DIR)
+    first_episode_id = next(iter(embeddings))
+    first_frame = next(iter(embeddings[first_episode_id]))
+    first_track_id = next(iter(embeddings[first_episode_id][first_frame]))
+    first_embedding = embeddings[first_episode_id][first_frame][first_track_id]
+
+    summary = {
+        "episodes": len(embeddings),
+        "token_files": len(token_paths),
+        "control_point_dim": int(first_embedding["control_point_dim"]),
+        "background_dim": int(first_embedding["background_dim"]),
+        "relation_channels": int(first_embedding["relation_channels"]),
+        "flattened_dim": int(first_embedding["flattened_dim"]),
+    }
+
+    summary_path = ACTION_EMBEDDINGS_DIR / "lunar_lander_action_embeddings_summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2))
 
     print("saved:", embeddings_path)
     print("saved token files:", len(token_paths))
+    print("saved summary:", summary_path)
     print("episodes:", len(embeddings))
 
 
 if __name__ == "__main__":
     main()
-
