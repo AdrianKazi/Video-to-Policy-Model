@@ -12,40 +12,43 @@ video frame -> object control points -> background points -> CP/background relat
 
 An action should be visible as a change in how an object moves relative to the background. A lander firing an engine, a car turning, or a person walking all create structured changes between object geometry and the surrounding scene. The project encodes that relation algebraically.
 
-For one object in frame `t`, control points are:
+For one object in frame `t`, control points are the compact geometry of the segmentation blob. They include the centroid and selected boundary/control points, so the model sees more than just the object's center.
 
-```text
-P_t in R^{K x 2}
-```
+$$P_t=\begin{bmatrix}p_t^{(1)}\\p_t^{(2)}\\\vdots\\p_t^{(K)}\end{bmatrix}=\begin{bmatrix}x_{cp,t}^{(1)}&y_{cp,t}^{(1)}\\x_{cp,t}^{(2)}&y_{cp,t}^{(2)}\\\vdots&\vdots\\x_{cp,t}^{(K)}&y_{cp,t}^{(K)}\end{bmatrix}\in\mathbb{R}^{K\times2}$$
 
-In the Lunar Lander experiment, `K = 6` control points are used: centroid, axis points, and contact-like points derived from the segmentation blob. The background is represented by selected tracked background points:
+In the Lunar Lander experiment, `K = 6` control points are used: centroid, axis points, and contact-like points derived from the segmentation blob. The background is represented by optical-flow points. Each background point stores image position and frame-to-frame displacement.
 
-```text
-B_t in R^{N x 4}
-```
+$$B_t=\begin{bmatrix}b_t^{(1)}\\b_t^{(2)}\\\vdots\\b_t^{(N)}\end{bmatrix}=\begin{bmatrix}x_{bckg,t}^{(1)}&y_{bckg,t}^{(1)}&dx_t^{(1)}&dy_t^{(1)}\\x_{bckg,t}^{(2)}&y_{bckg,t}^{(2)}&dx_t^{(2)}&dy_t^{(2)}\\\vdots&\vdots&\vdots&\vdots\\x_{bckg,t}^{(N)}&y_{bckg,t}^{(N)}&dx_t^{(N)}&dy_t^{(N)}\end{bmatrix}\in\mathbb{R}^{N\times4}$$
 
-Each background point stores:
+where `N` is the fixed number of selected background points. In the current pretraining setup, `N = 100`. The scalar optical-flow speed is:
 
-```text
-[x, y, dx, dy]
-```
+$$s_t^{(j)}=\sqrt{\left(dx_t^{(j)}\right)^2+\left(dy_t^{(j)}\right)^2}$$
 
-where `(x, y)` is the image position and `(dx, dy)` is optical-flow displacement.
+The action embedding is built as an outer product between control-point coordinates and background-point coordinates. This creates one relation value for every control-point/background-point pair.
 
-The action embedding is built from multiplicative relations between control-point coordinates and selected background-point coordinates:
+$$A_t^x=\underbrace{\begin{bmatrix}x_{cp,t}^{(1)}\\x_{cp,t}^{(2)}\\\vdots\\x_{cp,t}^{(K)}\end{bmatrix}}_{X_{cp,t}\in\mathbb{R}^{K\times1}}\underbrace{\begin{bmatrix}x_{bckg,t}^{(1)}\\x_{bckg,t}^{(2)}\\\vdots\\x_{bckg,t}^{(N)}\end{bmatrix}^{T}}_{X_{bckg,t}^{T}\in\mathbb{R}^{1\times N}}$$
 
-```text
-A_t^x = X_cp,t @ X_bckg,t.T
-A_t^y = Y_cp,t @ Y_bckg,t.T
-A_t = stack(A_t^x, A_t^y) in R^{K x N x 2}
-```
+$$A_t^y=\underbrace{\begin{bmatrix}y_{cp,t}^{(1)}\\y_{cp,t}^{(2)}\\\vdots\\y_{cp,t}^{(K)}\end{bmatrix}}_{Y_{cp,t}\in\mathbb{R}^{K\times1}}\underbrace{\begin{bmatrix}y_{bckg,t}^{(1)}\\y_{bckg,t}^{(2)}\\\vdots\\y_{bckg,t}^{(N)}\end{bmatrix}^{T}}_{Y_{bckg,t}^{T}\in\mathbb{R}^{1\times N}}$$
 
-This is an outer product, not a dot product. With `K = 6`, `N = 100`, and two relation channels, one flattened action token has:
+This is an outer product, not a dot product. It does not collapse the relation to one scalar. It produces two matrices:
 
-```text
-D = K * N * 2 = 1200
-z_t = flatten(A_t_norm) in R^1200
-```
+$$A_t^x\in\mathbb{R}^{K\times N},\quad A_t^y\in\mathbb{R}^{K\times N}$$
+
+Each entry stores one multiplicative relation:
+
+$$A_t^x(k,j)=x_{cp,t}^{(k)}x_{bckg,t}^{(j)},\quad A_t^y(k,j)=y_{cp,t}^{(k)}y_{bckg,t}^{(j)}$$
+
+The full action embedding stacks the x-relation and y-relation matrices:
+
+$$A_t=\left(A_t^x,A_t^y\right)\in\mathbb{R}^{K\times N\times2}$$
+
+Before the transformer sees the token, the action embedding is normalized and flattened:
+
+$$z_t=\operatorname{flatten}\left(A_t^{norm}\right)\in\mathbb{R}^{D}$$
+
+With `K = 6`, `N = 100`, and two relation channels, one flattened action token has:
+
+$$D=K\cdot N\cdot2=6\cdot100\cdot2=1200$$
 
 ## Action Embedding Visuals
 
@@ -69,20 +72,19 @@ The temporal-change plot is the key sanity check. The action embedding does not 
 
 Pretraining learns the temporal dynamics of action embeddings. The model is not yet learning the Lunar Lander action space. It is learning how CP/background relation tokens evolve over time.
 
-The pretraining task is:
+The pretraining task is causal next-token prediction, but the tokens are action embeddings instead of word tokens.
 
-```text
-z_{t-L+1}, ..., z_t -> z_{t+1}
-```
+$$z_{t+1}^{pred}=T_{\theta}\left(z_{t-L+1},z_{t-L+2},\ldots,z_t\right)$$
 
-where `z_t = flatten(A_t_norm)`.
+where `L` is the sequence length and `T_theta` is the causal transformer.
 
 In words: given a short history of action embeddings, predict the next action embedding.
 
-```text
-T_theta(z_{t-L+1:t}) = z_{t+1}^{pred}
-loss = MSE(z_{t+1}^{pred}, z_{t+1}^{true})
-```
+$$z_{t+1}^{true}=\operatorname{flatten}\left(A_{t+1}^{norm}\right)$$
+
+The loss compares the predicted next CP/background relation token with the true next token computed directly from the next video frame.
+
+$$\mathcal{L}_{pretrain}=\operatorname{MSE}\left(z_{t+1}^{pred},z_{t+1}^{true}\right)$$
 
 This is the useful research result of the branch: the transformer can learn motion-token dynamics from the action embedding representation.
 
