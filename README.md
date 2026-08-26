@@ -4,6 +4,194 @@ This project explores action inference from video without starting from human-de
 
 The core idea is to define an action mathematically as the dynamics of objects over time.
 
+## Current Handoff
+
+The current working branch of the project has moved from generic object/action notes into a concrete Lunar Lander action-embedding pretraining experiment.
+
+The main working idea is:
+
+```text
+video frame -> control points -> background points -> CP/background relation -> action embedding token
+```
+
+For one object in frame `t`, the control points are represented as:
+
+```text
+P_t in R^{K x 2}
+```
+
+where `K` is the number of control points. In the Lunar Lander experiment, these are geometry-derived points such as centroid, axis points, and contact-like points. The background is represented as selected tracked background points:
+
+```text
+B_t in R^{N x 4}
+```
+
+where each background point stores image coordinates and optical-flow displacement:
+
+```text
+[x, y, dx, dy]
+```
+
+The action embedding is currently defined as a multiplicative CP/background relation. For x and y coordinates:
+
+```text
+A_t^x = X_cp,t @ X_bckg,t.T
+A_t^y = Y_cp,t @ Y_bckg,t.T
+A_t = stack(A_t^x, A_t^y) in R^{K x N x 2}
+```
+
+This is an outer product, not a dot product. With `K = 6`, `N = 100`, and two relation channels, each flattened action token has:
+
+```text
+D = K * N * 2 = 1200
+```
+
+The transformer pretraining task is:
+
+```text
+z_{t-L+1:t} -> z_{t+1}
+```
+
+where `z_t = flatten(A_t_norm)`. This part works as a baseline: the model can learn temporal dynamics of CP/background action embeddings on Lunar Lander episodes.
+
+### What Worked
+
+- Built control point extraction for Lunar Lander from segmented blobs.
+- Built background surface grid tracking.
+- Reduced background points to a fixed `N = 100` selected points per frame.
+- Built action embeddings from CP/background outer products.
+- Normalized action embeddings and trained a small causal transformer to predict the next action embedding.
+- Modularized the pretraining pipeline under `src/pretraining/`.
+- Added notebook-scale artifacts under `notebooks/artifacts/` and production-style pretraining artifacts under `artifacts/pretrain/`.
+
+### Pretraining Result
+
+The pretraining experiment treats each normalized CP/background relation as one transformer token. The model sees a short history of action-embedding tokens and predicts the next token:
+
+```text
+z_{t-L+1}, ..., z_t -> z_{t+1}
+```
+
+This is not yet a policy. It is a motion-representation pretrain. The goal is to teach the model what local object-background motion looks like before mapping that motion into a specific robot or simulator action space.
+
+Pretraining artifacts are produced by the modular pipeline in `src/pretraining/` and written under `artifacts/pretrain/`. The current local run used Lunar Lander episodes, `K = 6` control points, `N = 100` selected background points, two relation channels, and flattened token dimension `D = 1200`.
+
+![Pretrain transformer loss](docs/assets/pretrain_transformer_loss.png)
+
+![Pretrain true vs predicted embedding](docs/assets/pretrain_true_vs_pred.png)
+
+The spatial reconstruction view is only an approximate visualization of the flattened relation token, but it is useful as a sanity check: the predicted relation stays close enough to the true next relation to show that the transformer is learning temporal structure.
+
+![Pretrain spatial prediction](docs/assets/pretrain_spatial_prediction.png)
+
+### Fine-Tuning Bottleneck
+
+The unresolved problem is mapping learned action embeddings into an executable agent action space.
+
+The desired inference path is:
+
+```text
+history frames -> CP/background -> action embeddings -> transformer -> predicted action embedding -> action interface
+```
+
+For Lunar Lander, the action interface is discrete:
+
+```text
+noop, left_engine, main_engine, right_engine
+```
+
+The difficult part is that the action embedding describes motion, but it is not automatically grounded to an agent-specific action command. A direct network:
+
+```text
+action_embedding_dim -> action_space_dim
+```
+
+needs a learning signal. If expert action labels are not used, the only tested signal so far is a re-environment benchmark: try candidate actions in a simulator, encode their resulting frame back into CP/background relation space, and choose the action whose consequence is closest to the reference relation.
+
+This produced some signal, but it also exposed a major issue: closed-loop re-env training drifts away from the reference trajectory when the model is still weak. Once the re-env state diverges or crashes, comparison to the original pretrain episode becomes noisy or invalid.
+
+The better next fine-tune direction is likely teacher-forced re-env grounding:
+
+```text
+replay reference trajectory to t -> test each candidate action locally -> compare t+H relation deltas -> train action head on the best candidate
+```
+
+This avoids letting an untrained policy destroy the trajectory before useful labels are generated.
+
+### Fine-Tuning Experiment
+
+The current fine-tune notebook explores an Action Inference Net:
+
+```text
+predicted action embedding -> Lunar Lander action logits
+```
+
+For Lunar Lander, the executable action interface is:
+
+```text
+0: noop
+1: left_engine
+2: main_engine
+3: right_engine
+```
+
+The fine-tune test used a re-environment benchmark. For each candidate action, the environment is replayed, the candidate action is applied, the resulting frame is encoded back into CP/background relation space, and the candidate whose consequence is closest to the reference relation is treated as the benchmark action. The more stable version compares horizon deltas instead of absolute next-frame relations:
+
+```text
+delta_true = A_true(t+H) - A_true(t)
+delta_candidate = A_reenv_candidate(t+H) - A_reenv(t)
+best_action = argmin MSE(delta_candidate, delta_true)
+```
+
+The latest fine-tune trace contains `8940` steps, `8` Lunar Lander episodes, horizon `H = 5`, input dimension `1200`, action-space output dimension `4`, and cross-entropy training against the re-env benchmark action.
+
+![AIN fine-tune loss and benchmark match](docs/assets/ain_reenv_loss_benchmark_match.png)
+
+The model showed a learning signal, but the action distribution and confusion matrix also show a strong bias toward `main_engine`. This is expected at this stage because Lunar Lander has many visually similar short-horizon states, and several candidate actions often produce almost indistinguishable CP/background deltas.
+
+![AIN action distribution](docs/assets/ain_action_distribution.png)
+
+![AIN confusion matrix](docs/assets/ain_confusion_matrix.png)
+
+The candidate margin plot is the key diagnostic. Most candidate losses are very close to each other, which means the benchmark often has low confidence. In those cases, the chosen action can be almost arbitrary even if the math is correct.
+
+![AIN candidate loss margin](docs/assets/ain_candidate_loss_margin.png)
+
+The re-env spatial view confirms that the loop can generate interpretable candidate consequences, but it also makes the central bottleneck visible: small action differences can be hard to separate from CP/background relation alone over a short horizon.
+
+![AIN re-env spatial sequence](docs/assets/ain_reenv_spatial_sequence.png)
+
+### Current Research Conclusion
+
+The pretraining representation is promising. The fine-tuning/action grounding step is the real bottleneck.
+
+The most likely next directions are:
+
+- keep the CP/background action embedding pretrain,
+- improve spatial structure instead of flattening everything too early,
+- add explicit spatial embeddings for control point index, background point index, channel, and time,
+- test teacher-forced re-env fine-tuning instead of closed-loop re-env fine-tuning,
+- consider a semantic bridge such as motion words or a pretrained visual model to map embeddings into interpretable action concepts,
+- only then map those concepts into a concrete agent action space.
+
+### Next Plan
+
+The next chat should not restart from object detection. The useful state is:
+
+```text
+pretrain action embeddings are valid enough for continued research
+fine-tune action grounding is the open problem
+```
+
+The next practical steps are:
+
+1. Rebuild fine-tuning as teacher-forced re-env grounding instead of closed-loop drift.
+2. Add confidence filtering using candidate loss margin, so low-margin pseudo-actions are ignored or downweighted.
+3. Test longer action-effect horizons and frame stride because single-frame CP/background differences are often too small.
+4. Replace pure flattened tokens with a spatially structured transformer input using control-point index, background-point index, relation-channel, and temporal position embeddings.
+5. Consider a semantic action bottleneck such as motion words: `move_left`, `move_right`, `stabilize`, `falling`, `slow_down`, `rotate_left`, `rotate_right`.
+6. Later, test whether pretrained visual encoders such as DINOv2, CLIP/SigLIP, or a VLM teacher can provide missing scene semantics.
+
 ## Repository Layout
 
 The repository is currently separated into code, notebooks, and local artifacts:
@@ -13,9 +201,10 @@ src/
   pretraining/      # modular action-embedding pretraining pipeline
 
 notebooks/
-  Action_Inference_Experiments_1.ipynb
-  Action_Inference_Experiments_2.ipynb
-  Action_inference_Pretrain.ipynb
+  Action_Inference_Experiments_Object_and_Background_Segmentation_Model_Selection.ipynb
+  Action_Inference_Experiments_LunarLander_Single_Episode_Action_Encoder_on_Transformer.ipynb
+  Action_inference_Experiments_LunarLander_Pretraining.ipynb
+  Action_Inference_Experiments_LunarLander_FineTune.ipynb
 
 artifacts/
   raw_videos/      # source videos used by research and pretraining
