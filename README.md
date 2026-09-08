@@ -10,45 +10,43 @@ video frame -> object control points -> background points -> CP/background relat
 
 ## Core Idea
 
-An action should be visible as a change in how an object moves relative to the background. A lander firing an engine, a car turning, or a person walking all create structured changes between object geometry and the surrounding scene. The project encodes that relation algebraically.
+Coordinate column vectors:
 
-For one object in frame `t`, control points are the compact geometry of the segmentation blob. They include the centroid and selected boundary/control points, so the model sees more than just the object's center.
+$$
+X_{cp,t} = \begin{bmatrix} x_{cp,t}^{(1)} \\ \vdots \\ x_{cp,t}^{(K)} \end{bmatrix} \in \mathbb{R}^{K}, \quad
+Y_{cp,t} = \begin{bmatrix} y_{cp,t}^{(1)} \\ \vdots \\ y_{cp,t}^{(K)} \end{bmatrix} \in \mathbb{R}^{K}
+$$
 
-$$P_t=\begin{bmatrix}p_t^{(1)}\\p_t^{(2)}\\\vdots\\p_t^{(K)}\end{bmatrix}=\begin{bmatrix}x_{cp,t}^{(1)}&y_{cp,t}^{(1)}\\x_{cp,t}^{(2)}&y_{cp,t}^{(2)}\\\vdots&\vdots\\x_{cp,t}^{(K)}&y_{cp,t}^{(K)}\end{bmatrix}\in\mathbb{R}^{K\times2}$$
+$$
+X_{bckg,t} = \begin{bmatrix} x_{bckg,t}^{(1)} \\ \vdots \\ x_{bckg,t}^{(N)} \end{bmatrix} \in \mathbb{R}^{N}, \quad
+Y_{bckg,t} = \begin{bmatrix} y_{bckg,t}^{(1)} \\ \vdots \\ y_{bckg,t}^{(N)} \end{bmatrix} \in \mathbb{R}^{N}
+$$
 
-In the Lunar Lander experiment, `K = 6` control points are used: centroid, axis points, and contact-like points derived from the segmentation blob. The background is represented by optical-flow points. Each background point stores image position and frame-to-frame displacement.
+Action embedding as an outer product:
 
-$$B_t=\begin{bmatrix}b_t^{(1)}\\b_t^{(2)}\\\vdots\\b_t^{(N)}\end{bmatrix}=\begin{bmatrix}x_{bckg,t}^{(1)}&y_{bckg,t}^{(1)}&dx_t^{(1)}&dy_t^{(1)}\\x_{bckg,t}^{(2)}&y_{bckg,t}^{(2)}&dx_t^{(2)}&dy_t^{(2)}\\\vdots&\vdots&\vdots&\vdots\\x_{bckg,t}^{(N)}&y_{bckg,t}^{(N)}&dx_t^{(N)}&dy_t^{(N)}\end{bmatrix}\in\mathbb{R}^{N\times4}$$
+$$
+A_t^x = X_{cp,t} X_{bckg,t}^{T} \in \mathbb{R}^{K \times N}
+$$
 
-where `N` is the fixed number of selected background points. In the current pretraining setup, `N = 100`. The scalar optical-flow speed is:
+$$
+A_t^y = Y_{cp,t} Y_{bckg,t}^{T} \in \mathbb{R}^{K \times N}
+$$
 
-$$s_t^{(j)}=\sqrt{\left(dx_t^{(j)}\right)^2+\left(dy_t^{(j)}\right)^2}$$
+Entries:
 
-The action embedding is built as an outer product between control-point coordinates and background-point coordinates. This creates one relation value for every control-point/background-point pair.
+$$
+A_t^x(k,j) = x_{cp,t}^{(k)} \, x_{bckg,t}^{(j)}, \qquad A_t^y(k,j) = y_{cp,t}^{(k)} \, y_{bckg,t}^{(j)}
+$$
 
-$$A_t^x=\underbrace{\begin{bmatrix}x_{cp,t}^{(1)}\\x_{cp,t}^{(2)}\\\vdots\\x_{cp,t}^{(K)}\end{bmatrix}}_{X_{cp,t}\in\mathbb{R}^{K\times1}}\underbrace{\begin{bmatrix}x_{bckg,t}^{(1)}\\x_{bckg,t}^{(2)}\\\vdots\\x_{bckg,t}^{(N)}\end{bmatrix}^{T}}_{X_{bckg,t}^{T}\in\mathbb{R}^{1\times N}}$$
+Stacked token:
 
-$$A_t^y=\underbrace{\begin{bmatrix}y_{cp,t}^{(1)}\\y_{cp,t}^{(2)}\\\vdots\\y_{cp,t}^{(K)}\end{bmatrix}}_{Y_{cp,t}\in\mathbb{R}^{K\times1}}\underbrace{\begin{bmatrix}y_{bckg,t}^{(1)}\\y_{bckg,t}^{(2)}\\\vdots\\y_{bckg,t}^{(N)}\end{bmatrix}^{T}}_{Y_{bckg,t}^{T}\in\mathbb{R}^{1\times N}}$$
+$$
+A_t = \left[A_t^x,\, A_t^y\right] \in \mathbb{R}^{K \times N \times 2}
+$$
 
-This is an outer product, not a dot product. It does not collapse the relation to one scalar. It produces two matrices:
-
-$$A_t^x\in\mathbb{R}^{K\times N},\quad A_t^y\in\mathbb{R}^{K\times N}$$
-
-Each entry stores one multiplicative relation:
-
-$$A_t^x(k,j)=x_{cp,t}^{(k)}x_{bckg,t}^{(j)},\quad A_t^y(k,j)=y_{cp,t}^{(k)}y_{bckg,t}^{(j)}$$
-
-The full action embedding stacks the x-relation and y-relation matrices:
-
-$$A_t=\left(A_t^x,A_t^y\right)\in\mathbb{R}^{K\times N\times2}$$
-
-Before the transformer sees the token, the action embedding is normalized and flattened:
-
-$$z_t=\operatorname{flatten}\left(A_t^{norm}\right)\in\mathbb{R}^{D}$$
-
-With `K = 6`, `N = 100`, and two relation channels, one flattened action token has:
-
-$$D=K\cdot N\cdot2=6\cdot100\cdot2=1200$$
+$$
+z_t = \operatorname{flatten}\left(A_t^{norm}\right) \in \mathbb{R}^{D}, \qquad D = K \cdot N \cdot 2 = 6 \cdot 100 \cdot 2 = 1200
+$$
 
 ## Action Embedding Visuals
 
