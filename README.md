@@ -1,3 +1,5 @@
+\noindent The full paper for this project is available here: \href{Learning Control Policies from Expert Videos.pdf}{Learning Control Policies from Expert Videos}.
+
 # Conclusion
 
 The model works well as long as the LSTM and autoencoder remain the main components. The main problem is action inference. The model can accurately predict future latent states and decode them back into images, but we are not yet able to reliably infer actions from sequences of latent states or images. The project therefore requires further research to determine how to recover discrete actions directly from visual observations, in a way that would also be intuitive for a human observer.
