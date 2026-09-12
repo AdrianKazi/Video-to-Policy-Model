@@ -1,4 +1,4 @@
-\noindent The full paper for this project is available here: \href{Learning Control Policies from Expert Videos.pdf}{Learning Control Policies from Expert Videos}.
+The full paper for this project is available here: [Learning Control Policies from Expert Videos](Learning%20Control%20Policies%20from%20Expert%20Videos.pdf).
 
 # Conclusion
 
