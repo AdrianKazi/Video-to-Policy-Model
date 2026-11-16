@@ -10,6 +10,10 @@ The model works well as long as the LSTM and autoencoder remain the main compone
 
 Video-to-policy research pipeline for inferring LunarLander controls from visual transitions.
 
+## Video-only experiment
+
+[Train and evaluate the video-only latent policy](Student/src/ActionInference/video_only/README.md) using MP4 episodes.
+
 ## Start Here
 
 Open the main notebook:
